@@ -14,8 +14,10 @@ import com.jzo2o.foundations.constants.RedisConstants;
 import com.jzo2o.foundations.enums.FoundationStatusEnum;
 import com.jzo2o.foundations.mapper.CityDirectoryMapper;
 import com.jzo2o.foundations.mapper.RegionMapper;
+import com.jzo2o.foundations.mapper.ServeMapper;
 import com.jzo2o.foundations.model.domain.CityDirectory;
 import com.jzo2o.foundations.model.domain.Region;
+import com.jzo2o.foundations.model.domain.Serve;
 import com.jzo2o.foundations.model.dto.request.RegionPageQueryReqDTO;
 import com.jzo2o.foundations.model.dto.request.RegionUpsertReqDTO;
 import com.jzo2o.foundations.model.dto.response.RegionResDTO;
@@ -40,7 +42,8 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
     private IConfigRegionService configRegionService;
     @Resource
     private CityDirectoryMapper cityDirectoryMapper;
-
+    @ Resource
+    private ServeMapper serveMapper;
 
     /**
      * 区域新增
@@ -148,11 +151,17 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         Integer activeStatus = region.getActiveStatus();
         //草稿或禁用状态方可启用
         if (!(FoundationStatusEnum.INIT.getStatus() == activeStatus || FoundationStatusEnum.DISABLE.getStatus() == activeStatus)) {
-            throw new ForbiddenOperationException("草稿或禁用状态方可启用");
+            throw new ForbiddenOperationException("草稿或禁用状态才可启用");
         }
         //如果需要启用区域，需要校验该区域下是否有上架的服务
-        //todo
-
+        //select count(*) from serve where region_id = 区域id and sale_status = 2
+        //条件构造器
+        LambdaQueryWrapper<Serve> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Serve::getRegionId, id).eq(Serve::getSaleStatus, 2);
+        Integer count = serveMapper.selectCount(wrapper);
+        if (count <= 0) {
+            throw new ForbiddenOperationException("当前区域下无可用的服务,不能启用");
+        }
         //更新启用状态
         LambdaUpdateWrapper<Region> updateWrapper = Wrappers.<Region>lambdaUpdate()
                 .eq(Region::getId, id)
@@ -180,8 +189,12 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         }
 
         //如果禁用区域下有上架的服务则无法禁用
-        //todo
-
+        LambdaQueryWrapper<Serve> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Serve::getRegionId, id).eq(Serve::getSaleStatus, 2);
+        Integer count = serveMapper.selectCount(wrapper);
+        if (count > 0) {
+            throw new ForbiddenOperationException("当前区域有启用的服务,不能禁用");
+        }
         //更新禁用状态
         LambdaUpdateWrapper<Region> updateWrapper = Wrappers.<Region>lambdaUpdate()
                 .eq(Region::getId, id)
