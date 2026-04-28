@@ -27,4 +27,44 @@ public interface ServeMapper extends BaseMapper<Serve> {
      * @return 服务信息
      */
     List<ServeResDTO> queryListByRegionId(Long regionId);
+
+    /**
+     * 首页服务分类及项目
+     *
+     * @param regionId 区域id
+     * @return 服务分类及项目
+     */
+    List<ServeCategoryResDTO> findListByRegionId(Long regionId);
+
+    /**
+     * 精选推荐
+     *
+     * @param regionId 区域id
+     * @return 精选推荐
+     */
+    List<ServeAggregationSimpleResDTO> findServeListByRegionId(Long regionId);
+
+    /**
+     * 服务详情
+     *
+     * @param id 服务id
+     * @return 服务详情
+     */
+    ServeAggregationSimpleResDTO serveDetail(Long id);
+
+    /**
+     * 服务类型
+     *
+     * @param regionId 区域id
+     * @return 服务类型
+     */
+    List<ServeAggregationTypeSimpleResDTO> findServeTypeListByRegionId(Long regionId);
+
+    /**
+     * 根据ID查询服务详情
+     *
+     * @param id 服务id
+     * @return 服务详情
+     */
+    ServeAggregationResDTO findServeDetailById(Long id);
 }

@@ -24,6 +24,9 @@ import com.jzo2o.foundations.model.dto.response.RegionResDTO;
 import com.jzo2o.foundations.service.IConfigRegionService;
 import com.jzo2o.foundations.service.IRegionService;
 import com.jzo2o.mysql.utils.PageUtils;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,7 +45,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
     private IConfigRegionService configRegionService;
     @Resource
     private CityDirectoryMapper cityDirectoryMapper;
-    @ Resource
+    @Resource
     private ServeMapper serveMapper;
 
     /**
@@ -143,6 +146,8 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
      *
      * @param id 区域id
      */
+    //区域启用后，当前启用区域列表就发生变更，需要清空已启用的区域列表
+    @CacheEvict(value = RedisConstants.CacheName.JZ_CACHE, key = "'ACTIVE_REGIONS'")
     @Override
     public void active(Long id) {
         //区域信息
@@ -177,6 +182,17 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
      *
      * @param id 区域id
      */
+    //禁用区域后, 当前启用区域列表就发生变更，需要清空已启用的区域列表
+    @Caching(
+            evict = {
+                    //删除开通区域列表
+                    @CacheEvict(value = RedisConstants.CacheName.JZ_CACHE, key = "'ACTIVE_REGIONS'"),
+                    //删除首页服务列表
+                    @CacheEvict(value = RedisConstants.CacheName.SERVE_ICON,key = "#id"),
+                    //删除热门服务列表
+                    @CacheEvict(value = RedisConstants.CacheName.HOT_SERVE, key = "#id")
+            }
+    )
     @Override
     public void deactivate(Long id) {
         //区域信息
@@ -207,6 +223,9 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
      *
      * @return 区域简略列表
      */
+    @Cacheable(value = RedisConstants.CacheName.JZ_CACHE,
+            key = "'ACTIVE_REGIONS'", //key: 当key用一个固定字符串时需要在双引号中用单引号括起来
+            cacheManager = RedisConstants.CacheManager.FOREVER)
     @Override
     public List<RegionSimpleResDTO> queryActiveRegionListCache() {
         return queryActiveRegionList();
