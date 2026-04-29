@@ -42,4 +42,30 @@ public interface IOrdersCreateService extends IService<Orders> {
      * @param orders 订单参数
      */
     void saveOrders(Orders orders);
+
+    /**
+     * 创建订单
+     *
+     * @param userId           登录用户id
+     * @param placeOrderReqDTO 订单参数
+     * @return 订单id
+     */
+    PlaceOrderResDTO placeOrder(Long userId, PlaceOrderReqDTO placeOrderReqDTO);
+
+    /**
+     * 订单支付
+     *
+     * @param id              订单id
+     * @param ordersPayReqDTO 支付请求对象
+     * @return 支付响应
+     */
+    OrdersPayResDTO pay(Long id, OrdersPayReqDTO ordersPayReqDTO);
+
+    /**
+     * 请求支付服务查询支付结果
+     *
+     * @param id 订单id
+     * @return 支付结果
+     */
+    OrdersPayResDTO getPayResultFromTradServer(Long id);
 }

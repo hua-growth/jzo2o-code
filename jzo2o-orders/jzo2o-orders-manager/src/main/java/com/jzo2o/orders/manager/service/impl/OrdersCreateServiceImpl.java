@@ -1,20 +1,36 @@
 package com.jzo2o.orders.manager.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.jzo2o.api.customer.AddressBookApi;
 import com.jzo2o.api.customer.dto.response.AddressBookResDTO;
 import com.jzo2o.api.foundations.ServeApi;
 import com.jzo2o.api.foundations.dto.response.ServeAggregationResDTO;
+import com.jzo2o.api.trade.NativePayApi;
+import com.jzo2o.api.trade.TradingApi;
+import com.jzo2o.api.trade.dto.request.NativePayReqDTO;
+import com.jzo2o.api.trade.dto.response.NativePayResDTO;
+import com.jzo2o.api.trade.dto.response.TradingResDTO;
+import com.jzo2o.api.trade.enums.PayChannelEnum;
+import com.jzo2o.api.trade.enums.TradingStateEnum;
+import com.jzo2o.common.expcetions.CommonException;
 import com.jzo2o.common.expcetions.ForbiddenOperationException;
 import com.jzo2o.common.utils.DateUtils;
+import com.jzo2o.common.utils.StringUtils;
 import com.jzo2o.mvc.utils.UserContext;
 import com.jzo2o.orders.base.constants.RedisConstants;
+import com.jzo2o.orders.base.enums.OrderPayStatusEnum;
+import com.jzo2o.orders.base.enums.OrderStatusEnum;
 import com.jzo2o.orders.base.mapper.OrdersMapper;
 import com.jzo2o.orders.base.model.domain.Orders;
+import com.jzo2o.orders.manager.model.dto.request.OrdersPayReqDTO;
 import com.jzo2o.orders.manager.model.dto.request.PlaceOrderReqDTO;
+import com.jzo2o.orders.manager.model.dto.response.OrdersPayResDTO;
 import com.jzo2o.orders.manager.model.dto.response.PlaceOrderResDTO;
+import com.jzo2o.orders.manager.porperties.TradeProperties;
 import com.jzo2o.orders.manager.service.IOrdersCreateService;
+import com.jzo2o.redis.annotations.Lock;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -47,8 +63,116 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
     @Autowired
     private IOrdersCreateService owner;
 
+    @Autowired
+    private NativePayApi nativePayApi;
+
+    @Autowired
+    private TradeProperties tradeProperties;
+
+    @Autowired
+    private TradingApi tradingApi;
+
     @Override
-    public PlaceOrderResDTO placeOrder(PlaceOrderReqDTO placeOrderReqDTO) {
+    public OrdersPayResDTO getPayResultFromTradServer(Long id) {
+        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
+        Orders orders = this.getById(id);
+        if (ObjectUtil.isNull(orders)) {
+            throw new ForbiddenOperationException("订单不存在");
+        }
+
+        //2. 如果订单的支付状态是待支付 并且 支付服务交易单号 不为空  调用支付服务查询订单支付状态
+        if (orders.getPayStatus() == 2 && orders.getTradingOrderNo() != null){
+            //调用支付服务查询订单支付状态
+            TradingResDTO tradingResDTO = tradingApi.findTradResultByTradingOrderNo(orders.getTradingOrderNo());
+            //根据支付服务返回的状态修改订单表中字段(订单状态、支付状态、第三方支付交易号)
+            //交易状态: 2-付款中 3-付款失败 4-已结算 5-取消订单
+            TradingStateEnum tradingState = tradingResDTO.getTradingState();
+            boolean update = this.lambdaUpdate()
+                    //交易状态: 4-已结算  订单状态:派单中
+                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getOrdersStatus, OrderStatusEnum.DISPATCHING.getStatus())
+                    //交易状态: 3-付款失败  订单状态:已关闭
+                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.FKSB), Orders::getOrdersStatus, OrderStatusEnum.CLOSED.getStatus())
+                    //交易状态: 5-取消订单  订单状态:已取消
+                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.QXDD), Orders::getOrdersStatus, OrderStatusEnum.CANCELED.getStatus())
+                    //交易状态: 4-已结算  支付状态:支付成功
+                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getPayStatus, OrderPayStatusEnum.PAY_SUCCESS.getStatus())
+                    //第三方支付交易单号
+                    .set(ObjectUtil.isNotEmpty(tradingResDTO.getTransactionId()), Orders::getTransactionId, tradingResDTO.getTransactionId())
+                    //根据订单id更新
+                    .eq(Orders::getId, id)
+                    .update();
+            if (!update) {
+                log.info("更新订单:{}状态失败", orders.getId());
+                throw new CommonException("更新订单" + orders.getId() + "状态失败");
+            }
+        }
+
+        //3. 返回结果
+        //查询订单的信息
+        Orders newOrders = this.getById(id);
+        OrdersPayResDTO ordersPayResDTO = new OrdersPayResDTO();
+        ordersPayResDTO.setProductOrderNo(newOrders.getId());//业务系统订单号
+        ordersPayResDTO.setTradingOrderNo(newOrders.getTradingOrderNo());//交易系统订单号
+        ordersPayResDTO.setTradingChannel(newOrders.getTradingChannel());//支付渠道
+        ordersPayResDTO.setPayStatus(newOrders.getPayStatus());//支付状态
+        return ordersPayResDTO;
+    }
+
+    @Override
+    public OrdersPayResDTO pay(Long id, OrdersPayReqDTO ordersPayReqDTO) {//参数1订单id 参数2支付渠道
+        //调用支付微服务 获取 二维码图片
+        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
+        Orders orders = this.getById(id);
+        if (ObjectUtil.isNull(orders)) {
+            throw new ForbiddenOperationException("订单不存在");
+        }
+
+        //2. 查询订单支付状态, 如果是已经支付 , 直接返回错误
+        //transaction_id : 只有支付成功,才会有这个号
+        if (orders.getPayStatus() == 4 && StringUtils.isNotEmpty(orders.getTransactionId())) {
+            throw new ForbiddenOperationException("订单已经支付了");
+        }
+
+        //3. 调用支付微服务, 获取二维码
+        NativePayReqDTO nativePayReqDTO = new NativePayReqDTO();
+        nativePayReqDTO.setProductAppId("jzo2o.orders");//业务系统标识
+        nativePayReqDTO.setProductOrderNo(id);//业务系统订单号
+        nativePayReqDTO.setTradingChannel(ordersPayReqDTO.getTradingChannel());//支付渠道
+        nativePayReqDTO.setTradingAmount(orders.getRealPayAmount());//支付金额
+        nativePayReqDTO.setMemo(orders.getServeItemName());//备注
+
+        //根据交易渠道设置商户号
+        if (ObjectUtil.equal(ordersPayReqDTO.getTradingChannel(), PayChannelEnum.WECHAT_PAY)) {
+            nativePayReqDTO.setEnterpriseId(tradeProperties.getWechatEnterpriseId());//微信商户号
+        }
+        if (ObjectUtil.equal(ordersPayReqDTO.getTradingChannel(), PayChannelEnum.ALI_PAY)) {
+            nativePayReqDTO.setEnterpriseId(tradeProperties.getAliEnterpriseId());//阿里商户号
+        }
+
+        //原有的交易渠道不为空 而且跟刚刚传入交易渠道不一样
+        if (StringUtils.isNotEmpty(orders.getTradingChannel()) &&
+                !StringUtils.equals(orders.getTradingChannel(), ordersPayReqDTO.getTradingChannel().toString())
+        ) {
+            nativePayReqDTO.setChangeChannel(true);//是否改变交易渠道
+        }else {
+            nativePayReqDTO.setChangeChannel(false);//是否改变交易渠道
+        }
+        NativePayResDTO payResDTO = nativePayApi.createDownLineTrading(nativePayReqDTO);
+
+        //4. 更新订单表数据(支付服务交易单号 支付渠道)
+        orders.setTradingOrderNo(payResDTO.getTradingOrderNo());//支付服务交易单号
+        orders.setTradingChannel(payResDTO.getTradingChannel());//支付渠道
+        this.updateById(orders);
+
+        //5. 封装返回结果
+        OrdersPayResDTO ordersPayResDTO = BeanUtil.copyProperties(payResDTO, OrdersPayResDTO.class);
+        ordersPayResDTO.setPayStatus(2);//支付状态: 未支付
+
+        return ordersPayResDTO;
+    }
+
+    @Lock(formatter = "ORDERS:CREATE:LOCK:#{userId}:#{placeOrderReqDTO.serveId}", time = 30, waitTime = 1,unlock=false)
+    public PlaceOrderResDTO placeOrder(Long userId, PlaceOrderReqDTO placeOrderReqDTO) {
         //1. 调用运营微服务, 根据服务id查询
         ServeAggregationResDTO serveDto = serveApi.findById(placeOrderReqDTO.getServeId());
         if (ObjectUtil.isNull(serveDto) || serveDto.getSaleStatus() != 2) {
@@ -102,6 +226,10 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
 
         //5.返回
         return new PlaceOrderResDTO(orders.getId());
+    }
+    @Override
+    public PlaceOrderResDTO placeOrder(PlaceOrderReqDTO placeOrderReqDTO) {
+        return owner.placeOrder(UserContext.currentUserId(), placeOrderReqDTO);
     }
 
     @Transactional

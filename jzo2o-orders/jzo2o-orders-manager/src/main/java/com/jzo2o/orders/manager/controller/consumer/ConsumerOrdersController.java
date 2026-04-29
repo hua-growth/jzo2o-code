@@ -63,4 +63,18 @@ public class ConsumerOrdersController {
     public PlaceOrderResDTO place(@RequestBody PlaceOrderReqDTO placeOrderReqDTO) {
         return ordersCreateService.placeOrder(placeOrderReqDTO);
     }
+
+    @ApiOperation("订单支付接口")
+    @PutMapping("/pay/{id}")
+    public OrdersPayResDTO pay(@PathVariable("id") Long id, @RequestBody OrdersPayReqDTO ordersPayReqDTO) {
+        OrdersPayResDTO ordersPayResDTO = ordersCreateService.pay(id, ordersPayReqDTO);
+        return ordersPayResDTO;
+    }
+
+    @ApiOperation("查询订单支付结果")
+    @GetMapping("/pay/{id}/result")
+    public OrdersPayResDTO payResult(@PathVariable("id") Long id) {
+        return ordersCreateService.getPayResultFromTradServer(id);
+    }
+
 }
