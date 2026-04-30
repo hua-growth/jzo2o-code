@@ -1,6 +1,7 @@
 package com.jzo2o.orders.manager.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.OrderItem;
@@ -10,15 +11,28 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.jzo2o.api.orders.dto.response.OrderResDTO;
 import com.jzo2o.api.orders.dto.response.OrderSimpleResDTO;
 import com.jzo2o.common.enums.EnableStatusEnum;
+import com.jzo2o.common.expcetions.ForbiddenOperationException;
 import com.jzo2o.common.utils.ObjectUtils;
+import com.jzo2o.orders.base.enums.OrderRefundStatusEnum;
+import com.jzo2o.orders.base.enums.OrderStatusEnum;
+import com.jzo2o.orders.base.mapper.OrdersCanceledMapper;
 import com.jzo2o.orders.base.mapper.OrdersMapper;
+import com.jzo2o.orders.base.mapper.OrdersRefundMapper;
 import com.jzo2o.orders.base.model.domain.Orders;
+import com.jzo2o.orders.base.model.domain.OrdersCanceled;
+import com.jzo2o.orders.base.model.domain.OrdersRefund;
 import com.jzo2o.orders.base.model.dto.OrderSnapshotDTO;
+import com.jzo2o.orders.base.model.dto.OrderUpdateStatusDTO;
+import com.jzo2o.orders.base.service.IOrdersCommonService;
+import com.jzo2o.orders.manager.model.dto.OrderCancelDTO;
 import com.jzo2o.orders.manager.service.IOrdersManagerService;
+import com.jzo2o.orders.manager.strategy.OrderCancelStrategyManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static com.jzo2o.orders.base.constants.FieldConstants.SORT_BY;
@@ -34,6 +48,16 @@ import static com.jzo2o.orders.base.constants.FieldConstants.SORT_BY;
 @Slf4j
 @Service
 public class OrdersManagerServiceImpl extends ServiceImpl<OrdersMapper, Orders> implements IOrdersManagerService {
+
+
+    @Autowired
+    private OrderCancelStrategyManager orderCancelStrategyManager;
+
+    @Override
+    public void cancel(OrderCancelDTO orderCancelDTO) {
+        //调用取消订单策略管理器处理取消订单
+        orderCancelStrategyManager.cancel(orderCancelDTO);
+    }
 
     @Override
     public List<Orders> batchQuery(List<Long> ids) {
@@ -73,6 +97,7 @@ public class OrdersManagerServiceImpl extends ServiceImpl<OrdersMapper, Orders> 
         return orderSimpleResDTOS;
 
     }
+
     /**
      * 根据订单id查询
      *

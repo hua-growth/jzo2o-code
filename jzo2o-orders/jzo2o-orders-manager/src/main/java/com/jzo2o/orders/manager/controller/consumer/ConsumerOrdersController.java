@@ -76,5 +76,14 @@ public class ConsumerOrdersController {
     public OrdersPayResDTO payResult(@PathVariable("id") Long id) {
         return ordersCreateService.getPayResultFromTradServer(id);
     }
-
+    @ApiOperation("取消订单，并保存相应的数据")
+    @PutMapping("/cancel")
+    public void cancel(@RequestBody OrderCancelReqDTO orderCancelReqDTO) {
+        OrderCancelDTO orderCancelDTO = BeanUtil.toBean(orderCancelReqDTO, OrderCancelDTO.class);
+        CurrentUserInfo currentUserInfo = UserContext.currentUser();
+        orderCancelDTO.setCurrentUserId(currentUserInfo.getId()); //当前登录用户id
+        orderCancelDTO.setCurrentUserName(currentUserInfo.getName());//当前登录用户名称
+        orderCancelDTO.setCurrentUserType(currentUserInfo.getUserType());//当前登录用户类型
+        ordersManagerService.cancel(orderCancelDTO);
+    }
 }
