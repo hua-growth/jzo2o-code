@@ -77,6 +77,49 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
     @Resource
     private ICouponWriteOffService couponWriteOffService;
 
+    //抢券
+    @Override
+    public void seizeCoupon(SeizeCouponReqDTO seizeCouponReqDTO) {
+        // 1.校验当前时间是否在活动期间
+        ActivityInfoResDTO activity = activityService.getActivityInfoByIdFromCache(seizeCouponReqDTO.getId());
+        if (activity == null || activity.getDistributeStartTime().isAfter(LocalDateTime.now())) {
+            throw new CommonException(SEIZE_COUPON_FAILD, "活动不存在或者未开始");
+        }
+        if (activity.getDistributeEndTime().isBefore(LocalDateTime.now())) {
+            throw new CommonException(SEIZE_COUPON_FAILD, "活动不存在或者已结束");
+        }
+
+        //2. 抢券
+        //2-1 准备参数
+        int index = (int) (seizeCouponReqDTO.getId() % 10);
+        String couponSeizeSyncRedisKey = RedisSyncQueueUtils.getQueueRedisKey(COUPON_SEIZE_SYNC_QUEUE_NAME, index);// 同步队列redisKey
+        String resourceStockRedisKey = String.format(COUPON_RESOURCE_STOCK, index);// 资源库存redisKey
+        String couponSeizeListRedisKey = String.format(COUPON_SEIZE_LIST, activity.getId(), index);// 抢券列表
+        log.debug("seize coupon keys -> couponSeizeListRedisKey->{},resourceStockRedisKey->{},couponSeizeListRedisKey->{},seizeCouponReqDTO.getId()->{},UserContext.currentUserId():{}",
+                couponSeizeListRedisKey, resourceStockRedisKey, couponSeizeListRedisKey, seizeCouponReqDTO.getId(), UserContext.currentUserId());
+
+        //2-2 执行抢券脚本
+        Object executeResult = redisTemplate.execute(
+                seizeCouponScript, //脚本
+                Arrays.asList(couponSeizeSyncRedisKey, resourceStockRedisKey, couponSeizeListRedisKey),//键
+                seizeCouponReqDTO.getId(), UserContext.currentUserId()//参数
+        );
+
+        //3. 返回结果
+        if (executeResult == null) {
+            throw new CommonException(SEIZE_COUPON_FAILD, "抢券失败");
+        }
+        long result = NumberUtils.parseLong(executeResult.toString());
+        if (result > 0) {
+            return; //成功
+        }else if (result == -1) {
+            throw new CommonException(SEIZE_COUPON_FAILD, "限领一张");
+        }else if (result == -2 || result == -4) {
+            throw new CommonException(SEIZE_COUPON_FAILD, "已抢光!");
+        }else{
+            throw new CommonException(SEIZE_COUPON_FAILD, "抢券失败");
+        }
+    }
     @Override
     public void processExpireCoupon() {
         lambdaUpdate()

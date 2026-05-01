@@ -20,6 +20,26 @@ import java.util.List;
  */
 public interface IActivityService extends IService<Activity> {
     /**
+     * 从缓存中获取活动信息
+     *
+     * @param id 活动id
+     * @return 活动信息
+     */
+    ActivityInfoResDTO getActivityInfoByIdFromCache(Long id);
+    /**
+     * 用户端抢券列表分页查询活动信息
+     *
+     * @param tabType 挑选条件 1 疯抢中  2 即将开始
+     * @return 活动列表
+     */
+    List<SeizeCouponInfoResDTO> queryForListFromCache(Integer tabType);
+
+    /**
+     * 活动预热(将满足条件的活动,同步到Redis中等待抢券)
+     */
+    void preHeat();
+
+    /**
      * 新增或修改一个优惠券活动
      *
      * @param dto 优惠券活动

@@ -24,6 +24,12 @@ import java.util.List;
  */
 public interface ICouponService extends IService<Coupon> {
     /**
+     * 抢券
+     *
+     * @param seizeCouponReqDTO 抢券参数
+     */
+    void seizeCoupon(SeizeCouponReqDTO seizeCouponReqDTO);
+    /**
      * 根据活动id查询优惠券领取记录
      *
      * @param dto 活动id
