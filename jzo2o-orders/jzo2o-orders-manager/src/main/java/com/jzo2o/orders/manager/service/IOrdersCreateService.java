@@ -68,4 +68,19 @@ public interface IOrdersCreateService extends IService<Orders> {
      * @return 支付结果
      */
     OrdersPayResDTO getPayResultFromTradServer(Long id);
+    /**
+     * 获取可用优惠券
+     *
+     * @param serveId 服务项目id
+     * @param purNum  购买数量
+     * @return 可用优惠券
+     */
+    List<AvailableCouponsResDTO> getAvailableCoupons(Long serveId, Integer purNum);
+    /**
+     * 保存订单(带优惠券)
+     *
+     * @param orders 订单信息
+     * @param couponId 优惠券id
+     */
+    void saveOrdersWithCoupon(Orders orders, Long couponId);
 }

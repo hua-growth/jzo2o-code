@@ -86,4 +86,9 @@ public class ConsumerOrdersController {
         orderCancelDTO.setCurrentUserType(currentUserInfo.getUserType());//当前登录用户类型
         ordersManagerService.cancel(orderCancelDTO);
     }
+    @ApiOperation("获取可用优惠券")
+    @GetMapping("/getAvailableCoupons")
+    public List<AvailableCouponsResDTO> getCoupons(Long serveId,Integer purNum) {
+        return ordersCreateService.getAvailableCoupons(serveId, purNum);
+    }
 }

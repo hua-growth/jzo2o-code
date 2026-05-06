@@ -24,6 +24,12 @@ import java.util.List;
  */
 public interface ICouponService extends IService<Coupon> {
     /**
+     * 退回优惠券
+     *
+     * @param couponUseBackReqDTO 优惠券
+     */
+    void useBack(CouponUseBackReqDTO couponUseBackReqDTO);
+    /**
      * 抢券
      *
      * @param seizeCouponReqDTO 抢券参数
@@ -41,5 +47,27 @@ public interface ICouponService extends IService<Coupon> {
      * 已领取优惠券自动过期
      */
     void processExpireCoupon();
-
+    /**
+     * 我的优惠券列表
+     *
+     * @param lastId 最后一个优惠券id
+     * @param userId 用户id
+     * @param status 状态
+     * @return 优惠券列表
+     */
+    List<CouponInfoResDTO> queryForList(Long lastId, Long userId, Integer status);
+    /**
+     * 获取可用优惠券列表
+     *
+     * @param totalAmount 订单总金额
+     * @return 可用的优惠券列表
+     */
+    List<AvailableCouponsResDTO> getAvailable(BigDecimal totalAmount);
+    /**
+     * 核销优惠券
+     *
+     * @param couponUseReqDTO 优惠券对象
+     * @return 实际使用金额
+     */
+    CouponUseResDTO use(CouponUseReqDTO couponUseReqDTO);
 }

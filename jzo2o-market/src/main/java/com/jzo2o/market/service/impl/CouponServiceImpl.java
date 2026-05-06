@@ -1,5 +1,6 @@
 package com.jzo2o.market.service.impl;
 
+import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.db.DbRuntimeException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -19,6 +20,7 @@ import com.jzo2o.market.enums.CouponStatusEnum;
 import com.jzo2o.market.mapper.CouponMapper;
 import com.jzo2o.market.model.domain.Activity;
 import com.jzo2o.market.model.domain.Coupon;
+import com.jzo2o.market.model.domain.CouponUseBack;
 import com.jzo2o.market.model.domain.CouponWriteOff;
 import com.jzo2o.market.model.dto.request.CouponOperationPageQueryReqDTO;
 import com.jzo2o.market.model.dto.request.SeizeCouponReqDTO;
@@ -76,6 +78,145 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     @Resource
     private ICouponWriteOffService couponWriteOffService;
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void useBack(CouponUseBackReqDTO couponUseBackReqDTO) {
+        //1. 检查优惠券是否有核销记录，没有则不需要退回
+        CouponWriteOff couponWriteOff = couponWriteOffService.lambdaQuery()
+                .eq(CouponWriteOff::getOrdersId, couponUseBackReqDTO.getOrdersId())
+                .eq(CouponWriteOff::getUserId, couponUseBackReqDTO.getUserId())
+                .one();
+        if (ObjectUtil.isNull(couponWriteOff)) {
+            throw new ForbiddenOperationException("优惠券退回失败,原因: 没有对应的核销记录");
+        }
+
+        //2. 在优惠券退回表中添加记录
+        CouponUseBack couponUseBack = new CouponUseBack();
+        couponUseBack.setCouponId(couponWriteOff.getCouponId());//优惠券id 千万不要从couponUseBackReqDTO对象中获取
+        couponUseBack.setUserId(couponUseBackReqDTO.getUserId());
+        couponUseBack.setUseBackTime(LocalDateTime.now());
+        couponUseBack.setWriteOffTime(couponWriteOff.getWriteOffTime());
+        couponUseBackService.save(couponUseBack);
+
+        //3. 更新优惠券表中的状态字段，并清空订单id及使用时间字段
+        //3-1 根据优惠券id查询信息
+        Coupon coupon = this.getById(couponWriteOff.getCouponId());
+        if (ObjectUtil.isNull(coupon)) {
+            throw new ForbiddenOperationException("优惠券退回失败,原因: 没有对应的优惠券信息");
+        }
+
+        //3-2 根据活动id查询信息
+        Activity activity = activityService.getById(coupon.getActivityId());
+        if (ObjectUtil.isNull(activity)) {
+            throw new ForbiddenOperationException("优惠券退回失败,原因: 没有对应的优惠券活动信息");
+        }
+
+        //3-3 如果优惠券已过期则标记为已失效，如果未过期，则标记为未使用
+        CouponStatusEnum couponStatusEnum = coupon.getValidityTime().isAfter(LocalDateTime.now())
+                ? CouponStatusEnum.NO_USE : CouponStatusEnum.INVALID;
+
+        //3-4 如果优惠券对应的活动已作废则标记为已作废
+        if (activity.getStatus().equals(ActivityStatusEnum.VOIDED.getStatus())){
+            couponStatusEnum = CouponStatusEnum.VOIDED;
+        }
+
+        //3-5 执行优惠券的更新
+//下面的写法无法对数据表字段进行空值更新,要改为使用lambdaUpdate来处理. 此问题在测试视频中专门有讲解
+//        coupon.setStatus(couponStatusEnum.getStatus());
+//        coupon.setOrdersId(null);
+//        coupon.setUseTime(null);
+//        boolean b = this.updateById(coupon);
+
+        boolean b = this.lambdaUpdate()
+                .set(Coupon::getStatus, couponStatusEnum.getStatus())
+                .set(Coupon::getOrdersId, null)
+                .set(Coupon::getUseTime, null)
+                .eq(Coupon::getId, coupon.getId())
+                .update();
+        if (!b) {
+            throw new ForbiddenOperationException("优惠券退回失败,原因: 更新优惠券失败");
+        }
+
+        //4. 删除优惠券核销表中的相关记录
+        boolean b1 = couponWriteOffService.removeById(couponWriteOff.getId());
+        if (!b1) {
+            throw new ForbiddenOperationException("优惠券退回失败,原因: 删除优惠券核销记录失败");
+        }
+    }
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CouponUseResDTO use(CouponUseReqDTO couponUseReqDTO) {
+        //1. 校验优惠券信息: 只有订单金额大于等于满减金额，并且优惠券在有效状态方可使用
+        Coupon coupon = this.lambdaQuery()
+                .eq(Coupon::getUserId, UserContext.currentUserId())//- 所属用户：当前登录用户
+                .eq(Coupon::getStatus, CouponStatusEnum.NO_USE.getStatus())//- 状态：未使用
+                .ge(Coupon::getValidityTime, LocalDateTime.now())//- 在有效使用期限内
+                .le(Coupon::getAmountCondition, couponUseReqDTO.getTotalAmount())//- 满减金额：小于等于订单总额
+                .eq(Coupon::getId, couponUseReqDTO.getId())//优惠券id
+                .one();
+        if (ObjectUtil.isNull(coupon)) {
+            throw new ForbiddenOperationException("优惠券核销失败");
+        }
+
+        //2. 修改优惠券表中该优惠券的使用状态（已使用）、使用时间（当前时间）、订单id（订单微服务传入）
+        coupon.setStatus(CouponStatusEnum.USED.getStatus());//使用状态（已使用）
+        coupon.setUseTime(LocalDateTime.now());//使用时间（当前时间）
+        coupon.setOrdersId(couponUseReqDTO.getOrdersId().toString());//订单id（订单微服务传入）
+        this.updateById(coupon);
+
+        //3. 向优惠券核销表添加一条记录
+        CouponWriteOff couponWriteOff = new CouponWriteOff();
+        couponWriteOff.setCouponId(couponUseReqDTO.getId());
+        couponWriteOff.setUserId(UserContext.currentUserId());
+        couponWriteOff.setOrdersId(couponUseReqDTO.getOrdersId());
+        couponWriteOff.setActivityId(coupon.getActivityId());
+        couponWriteOff.setWriteOffTime(LocalDateTime.now());
+        couponWriteOff.setWriteOffManPhone(coupon.getUserPhone());
+        couponWriteOff.setWriteOffManName(coupon.getUserName());
+        couponWriteOffService.save(couponWriteOff);
+
+        //4. 核销成功返回最终优惠的金额
+        BigDecimal discountAmount = CouponUtils.calDiscountAmount(coupon, couponUseReqDTO.getTotalAmount());
+        CouponUseResDTO couponUseResDTO = new CouponUseResDTO();
+        couponUseResDTO.setDiscountAmount(discountAmount);
+        return couponUseResDTO;
+    }
+    @Override
+    public List<AvailableCouponsResDTO> getAvailable(BigDecimal totalAmount) {
+        //- 优惠金额：小于订单金额
+        //1. 查询优惠券
+        List<Coupon> list = this.lambdaQuery()
+                .eq(Coupon::getUserId, UserContext.currentUserId())//- 所属用户：当前登录用户
+                .eq(Coupon::getStatus, CouponStatusEnum.NO_USE.getStatus())//- 状态：未使用
+                .ge(Coupon::getValidityTime, LocalDateTime.now())//- 在有效使用期限内
+                .le(Coupon::getAmountCondition, totalAmount)//- 满减金额：小于等于订单总额
+                .list();
+
+        //2. 优惠金额：小于订单金额
+        List<Coupon> collect = list.stream()
+                .map(e -> e.setDiscountAmount(CouponUtils.calDiscountAmount(e, totalAmount))) //获取每个优惠券对应当前订单的优惠金额
+                .filter(e ->
+                        e.getDiscountAmount().compareTo(new BigDecimal(0)) > 0
+                                && e.getDiscountAmount().compareTo(totalAmount) < 0
+                )//0 < 优惠金额：小于订单金额
+                .sorted(Comparator.comparing(Coupon::getDiscountAmount).reversed())//按照优惠金额从大到小排序
+                .collect(Collectors.toList());
+
+        //3. 返回结果
+        return BeanUtils.copyToList(collect, AvailableCouponsResDTO.class);
+    }
+
+    @Override
+    public List<CouponInfoResDTO> queryForList(Long lastId, Long userId, Integer status) {
+        List<Coupon> list = this.lambdaQuery()
+                .eq(Coupon::getStatus, status)
+                .eq(Coupon::getUserId, userId)
+                .lt(lastId != null, Coupon::getId, lastId)
+                .orderByDesc(Coupon::getCreateTime)
+                .last("limit 10")
+                .list();
+        return BeanUtils.copyToList(list, CouponInfoResDTO.class);
+    }
 
     //抢券
     @Override
@@ -112,14 +253,15 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         long result = NumberUtils.parseLong(executeResult.toString());
         if (result > 0) {
             return; //成功
-        }else if (result == -1) {
+        } else if (result == -1) {
             throw new CommonException(SEIZE_COUPON_FAILD, "限领一张");
-        }else if (result == -2 || result == -4) {
+        } else if (result == -2 || result == -4) {
             throw new CommonException(SEIZE_COUPON_FAILD, "已抢光!");
-        }else{
+        } else {
             throw new CommonException(SEIZE_COUPON_FAILD, "抢券失败");
         }
     }
+
     @Override
     public void processExpireCoupon() {
         lambdaUpdate()

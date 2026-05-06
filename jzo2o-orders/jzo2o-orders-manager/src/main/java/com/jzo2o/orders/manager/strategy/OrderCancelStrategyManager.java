@@ -3,6 +3,8 @@ package com.jzo2o.orders.manager.strategy;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.extra.spring.SpringUtil;
+import com.jzo2o.api.market.dto.CouponApi;
+import com.jzo2o.api.market.dto.request.CouponUseBackReqDTO;
 import com.jzo2o.common.expcetions.ForbiddenOperationException;
 import com.jzo2o.orders.base.enums.OrderStatusEnum;
 import com.jzo2o.orders.base.mapper.OrdersMapper;
@@ -13,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -22,6 +25,8 @@ public class OrderCancelStrategyManager {
     
     @Autowired
     private OrdersMapper ordersMapper;
+    @Autowired
+    private CouponApi couponApi;
 
     //key格式：userType+":"+orderStatusEnum，例：1：NO_PAY
     private Map<String, OrderCancelStrategy> strategyMap = new HashMap<>();
@@ -39,7 +44,13 @@ public class OrderCancelStrategyManager {
             throw new ForbiddenOperationException("订单不存在");
         }
         BeanUtil.copyProperties(orders, orderCancelDTO);
-        
+        //添加退回优惠券的逻辑
+        if (orders.getDiscountAmount().compareTo(BigDecimal.ZERO) > 0){
+                   CouponUseBackReqDTO couponUseBackReqDTO = new CouponUseBackReqDTO();
+                    couponUseBackReqDTO.setOrdersId(orders.getId());//订单id
+                    couponUseBackReqDTO.setUserId(orders.getUserId());//用户id
+                    couponApi.useBack(couponUseBackReqDTO);
+                }
         //2. 根据用户类型和订单状态获取获取策略对象
         String key = orderCancelDTO.getCurrentUserType() + ":" + OrderStatusEnum.codeOf(orders.getOrdersStatus()).toString();
         OrderCancelStrategy strategy =  strategyMap.get(key);
