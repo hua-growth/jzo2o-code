@@ -24,11 +24,14 @@ import com.jzo2o.common.utils.DateUtils;
 import com.jzo2o.common.utils.ObjectUtils;
 import com.jzo2o.common.utils.StringUtils;
 import com.jzo2o.mvc.utils.UserContext;
+import com.jzo2o.orders.base.config.OrderStateMachine;
 import com.jzo2o.orders.base.constants.RedisConstants;
 import com.jzo2o.orders.base.enums.OrderPayStatusEnum;
+import com.jzo2o.orders.base.enums.OrderStatusChangeEventEnum;
 import com.jzo2o.orders.base.enums.OrderStatusEnum;
 import com.jzo2o.orders.base.mapper.OrdersMapper;
 import com.jzo2o.orders.base.model.domain.Orders;
+import com.jzo2o.orders.base.model.dto.OrderSnapshotDTO;
 import com.jzo2o.orders.manager.model.dto.request.OrdersPayReqDTO;
 import com.jzo2o.orders.manager.model.dto.request.PlaceOrderReqDTO;
 import com.jzo2o.orders.manager.model.dto.response.OrdersPayResDTO;
@@ -80,6 +83,8 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
     private TradingApi tradingApi;
     @Autowired
     private CouponApi couponApi;
+    @Autowired
+    private OrderStateMachine orderStateMachine;
 
     @Override
     public List<AvailableCouponsResDTO> getAvailableCoupons(Long serveId, Integer purNum) {
@@ -97,6 +102,7 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
         return available;
     }
 
+
     @Override
     public OrdersPayResDTO getPayResultFromTradServer(Long id) {
         //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
@@ -112,23 +118,18 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
             //根据支付服务返回的状态修改订单表中字段(订单状态、支付状态、第三方支付交易号)
             //交易状态: 2-付款中 3-付款失败 4-已结算 5-取消订单
             TradingStateEnum tradingState = tradingResDTO.getTradingState();
-            boolean update = this.lambdaUpdate()
-                    //交易状态: 4-已结算  订单状态:派单中
-                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getOrdersStatus, OrderStatusEnum.DISPATCHING.getStatus())
-                    //交易状态: 3-付款失败  订单状态:已关闭
-                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.FKSB), Orders::getOrdersStatus, OrderStatusEnum.CLOSED.getStatus())
-                    //交易状态: 5-取消订单  订单状态:已取消
-                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.QXDD), Orders::getOrdersStatus, OrderStatusEnum.CANCELED.getStatus())
-                    //交易状态: 4-已结算  支付状态:支付成功
-                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getPayStatus, OrderPayStatusEnum.PAY_SUCCESS.getStatus())
-                    //第三方支付交易单号
-                    .set(ObjectUtil.isNotEmpty(tradingResDTO.getTransactionId()), Orders::getTransactionId, tradingResDTO.getTransactionId())
-                    //根据订单id更新
-                    .eq(Orders::getId, id)
-                    .update();
-            if (!update) {
-                log.info("更新订单:{}状态失败", orders.getId());
-                throw new CommonException("更新订单" + orders.getId() + "状态失败");
+
+            if (ObjectUtil.equal(tradingState, TradingStateEnum.YJS)) {
+                // 修改订单状态和支付状态
+                OrderSnapshotDTO orderSnapshotDTO = OrderSnapshotDTO.builder()
+                        .payTime(LocalDateTime.now())
+                        .tradingOrderNo(tradingResDTO.getTradingOrderNo())
+                        .tradingChannel(tradingResDTO.getTradingChannel())
+                        .thirdOrderId(tradingResDTO.getTransactionId())
+                        .build();
+                orderStateMachine.changeStatus(orders.getUserId(), orders.getId().toString(), OrderStatusChangeEventEnum.PAYED, orderSnapshotDTO);
+            } else {
+                //todo 其它情况暂不处理,应该每种都对应一个处理器
             }
         }
 
@@ -142,6 +143,52 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
         ordersPayResDTO.setPayStatus(newOrders.getPayStatus());//支付状态
         return ordersPayResDTO;
     }
+
+//    @Override
+//    public OrdersPayResDTO getPayResultFromTradServer(Long id) {
+//        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
+//        Orders orders = this.getById(id);
+//        if (ObjectUtil.isNull(orders)) {
+//            throw new ForbiddenOperationException("订单不存在");
+//        }
+//
+//        //2. 如果订单的支付状态是待支付 并且 支付服务交易单号 不为空  调用支付服务查询订单支付状态
+//        if (orders.getPayStatus() == 2 && orders.getTradingOrderNo() != null) {
+//            //调用支付服务查询订单支付状态
+//            TradingResDTO tradingResDTO = tradingApi.findTradResultByTradingOrderNo(orders.getTradingOrderNo());
+//            //根据支付服务返回的状态修改订单表中字段(订单状态、支付状态、第三方支付交易号)
+//            //交易状态: 2-付款中 3-付款失败 4-已结算 5-取消订单
+//            TradingStateEnum tradingState = tradingResDTO.getTradingState();
+//            boolean update = this.lambdaUpdate()
+//                    //交易状态: 4-已结算  订单状态:派单中
+//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getOrdersStatus, OrderStatusEnum.DISPATCHING.getStatus())
+//                    //交易状态: 3-付款失败  订单状态:已关闭
+//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.FKSB), Orders::getOrdersStatus, OrderStatusEnum.CLOSED.getStatus())
+//                    //交易状态: 5-取消订单  订单状态:已取消
+//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.QXDD), Orders::getOrdersStatus, OrderStatusEnum.CANCELED.getStatus())
+//                    //交易状态: 4-已结算  支付状态:支付成功
+//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getPayStatus, OrderPayStatusEnum.PAY_SUCCESS.getStatus())
+//                    //第三方支付交易单号
+//                    .set(ObjectUtil.isNotEmpty(tradingResDTO.getTransactionId()), Orders::getTransactionId, tradingResDTO.getTransactionId())
+//                    //根据订单id更新
+//                    .eq(Orders::getId, id)
+//                    .update();
+//            if (!update) {
+//                log.info("更新订单:{}状态失败", orders.getId());
+//                throw new CommonException("更新订单" + orders.getId() + "状态失败");
+//            }
+//        }
+//
+//        //3. 返回结果
+//        //查询订单的信息
+//        Orders newOrders = this.getById(id);
+//        OrdersPayResDTO ordersPayResDTO = new OrdersPayResDTO();
+//        ordersPayResDTO.setProductOrderNo(newOrders.getId());//业务系统订单号
+//        ordersPayResDTO.setTradingOrderNo(newOrders.getTradingOrderNo());//交易系统订单号
+//        ordersPayResDTO.setTradingChannel(newOrders.getTradingChannel());//支付渠道
+//        ordersPayResDTO.setPayStatus(newOrders.getPayStatus());//支付状态
+//        return ordersPayResDTO;
+//    }
 
     @Override
     public OrdersPayResDTO pay(Long id, OrdersPayReqDTO ordersPayReqDTO) {//参数1订单id 参数2支付渠道
@@ -249,10 +296,10 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
         //4. 保存到数据表
         owner.saveOrders(orders);
         //有优惠卷和无优惠卷两个逻辑的下单
-        if(ObjectUtils.isNull(placeOrderReqDTO.getCouponId())){
+        if (ObjectUtils.isNull(placeOrderReqDTO.getCouponId())) {
             owner.saveOrders(orders);
-        }else{
-            owner.saveOrdersWithCoupon(orders,placeOrderReqDTO.getCouponId());
+        } else {
+            owner.saveOrdersWithCoupon(orders, placeOrderReqDTO.getCouponId());
         }
 
         //5.返回
@@ -267,9 +314,15 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
     @Transactional
     public void saveOrders(Orders orders) {
         this.save(orders);
+        //构建快照
+        OrderSnapshotDTO orderSnapshotDTO = BeanUtil.toBean(this.getById(orders.getId()), OrderSnapshotDTO.class);
+
+        //启动状态机
+        orderStateMachine.start(orders.getUserId(), orders.getId().toString(), orderSnapshotDTO);
     }
+
     @GlobalTransactional
-    public void saveOrdersWithCoupon(Orders orders,Long couponId) {
+    public void saveOrdersWithCoupon(Orders orders, Long couponId) {
         //1. 调用优惠券微服务核销优惠券
         CouponUseReqDTO couponUseReqDTO = new CouponUseReqDTO();
         couponUseReqDTO.setId(couponId);//优惠券id
@@ -284,6 +337,10 @@ public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> i
 
         //3. 创建订单
         this.save(orders);
+        OrderSnapshotDTO orderSnapshotDTO = BeanUtil.toBean(this.getById(orders.getId()), OrderSnapshotDTO.class);
+
+        //启动状态机
+        orderStateMachine.start(orders.getUserId(), orders.getId().toString(), orderSnapshotDTO);
     }
 
     /**
