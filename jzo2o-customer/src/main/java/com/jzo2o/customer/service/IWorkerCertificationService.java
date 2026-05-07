@@ -1,8 +1,12 @@
 package com.jzo2o.customer.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.jzo2o.common.model.PageResult;
 import com.jzo2o.customer.model.domain.WorkerCertification;
 import com.jzo2o.customer.model.dto.WorkerCertificationUpdateDTO;
+import com.jzo2o.customer.model.dto.request.CertificationAuditReqDTO;
+import com.jzo2o.customer.model.dto.request.WorkerCertificationAuditPageQueryReqDTO;
+import com.jzo2o.customer.model.dto.response.WorkerCertificationAuditResDTO;
 
 /**
  * <p>
@@ -13,7 +17,19 @@ import com.jzo2o.customer.model.dto.WorkerCertificationUpdateDTO;
  * @since 2023-09-06
  */
 public interface IWorkerCertificationService extends IService<WorkerCertification> {
+    /**
+     * 分页查询
+     * @param workerCertificationAuditPageQueryReqDTO 分页查询条件
+     * @return 分页结果
+     */
+    PageResult<WorkerCertificationAuditResDTO> pageQuery(WorkerCertificationAuditPageQueryReqDTO workerCertificationAuditPageQueryReqDTO);
 
+    /**
+     * 审核认证信息
+     * @param id                       申请记录id
+     * @param certificationAuditReqDTO 审核请求
+     */
+    void auditCertification(Long id, CertificationAuditReqDTO certificationAuditReqDTO);
 
 
     /**
