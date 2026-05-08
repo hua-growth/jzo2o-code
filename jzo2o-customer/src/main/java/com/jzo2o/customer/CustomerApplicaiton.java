@@ -5,7 +5,6 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 @EnableAspectJAutoProxy
@@ -13,8 +12,6 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 @Slf4j
 @EnableCaching
 @MapperScan("com.jzo2o.customer.mapper")
-@EnableFeignClients(basePackages = "com.jzo2o.api")
-
 public class CustomerApplicaiton {
 
     public static void main(String[] args) {

@@ -22,7 +22,6 @@ import com.jzo2o.customer.model.dto.request.AddressBookUpsertReqDTO;
 import com.jzo2o.customer.service.IAddressBookService;
 import com.jzo2o.mvc.utils.UserContext;
 import com.jzo2o.mysql.utils.PageUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,108 +39,36 @@ import java.util.List;
  */
 @Service
 public class AddressBookServiceImpl extends ServiceImpl<AddressBookMapper, AddressBook> implements IAddressBookService {
-
-    @Autowired
+    @Resource
+    private AddressBookMapper addressBookMapper;
+    @Resource
     private MapApi mapApi;
 
-
-    @Transactional(rollbackFor = Exception.class)
+    /**
+     * 地址薄新增
+     *
+     * @param addressBookUpsertReqDTO 插入更新地址薄
+     */
     @Override
-    public void updateDefaultStatus(Long id, Integer flag) {
-        //如果设默认地址，先把其他地址取消默认
-        if (1 == flag) {
-            this.lambdaUpdate().set(AddressBook::getIsDefault, 0)
-                    .eq(AddressBook::getUserId, UserContext.currentUserId())
-                    .update();
-        }
-
-        //2. 修改
-        AddressBook addressBook = new AddressBook();
-        addressBook.setId(id);
-        addressBook.setIsDefault(flag);
-        getBaseMapper().updateById(addressBook);
-    }
-
-    @Override
-    @Transactional
-    public void updateAddressBook(Long id, AddressBookUpsertReqDTO addressBookUpsertReqDTO) {
-        //1. 如果新增地址设为默认，则将当前用户的其它地址设置为非默认
-        if (1 == addressBookUpsertReqDTO.getIsDefault()) {
-            this.lambdaUpdate().set(AddressBook::getIsDefault, 0)
-                    .eq(AddressBook::getUserId, UserContext.currentUserId())
-                    .update();
-        }
-
-        //2. 拷贝赋值
-        AddressBook addressBook = BeanUtil.toBean(addressBookUpsertReqDTO, AddressBook.class);
-        addressBook.setId(id);
-
-        //3. 如果请求体中没有经纬度，则调用第三方api根据详细地址获取经纬度
-        if (ObjectUtil.isEmpty(addressBookUpsertReqDTO.getLocation())) {
-            //组装详细地址
-            String completeAddress = addressBookUpsertReqDTO.getProvince() +
-                    addressBookUpsertReqDTO.getCity() +
-                    addressBookUpsertReqDTO.getCounty() +
-                    addressBookUpsertReqDTO.getAddress();
-            //远程请求高德获取经纬度
-            LocationResDTO locationDto = mapApi.getLocationByAddress(completeAddress);
-            //经纬度(字符串格式：经度,纬度),经度在前，纬度在后
-            String location = locationDto.getLocation();
-            addressBookUpsertReqDTO.setLocation(location);
-        }
-
-        if (StringUtils.isNotEmpty(addressBookUpsertReqDTO.getLocation())) {
-            // 经度
-            addressBook.setLon(NumberUtils.parseDouble(addressBookUpsertReqDTO.getLocation().split(",")[0]));
-            // 纬度
-            addressBook.setLat(NumberUtils.parseDouble(addressBookUpsertReqDTO.getLocation().split(",")[1]));
-        }
-
-        //4. 执行修改
-        baseMapper.updateById(addressBook);
-    }
-
-    @Override
-    public PageResult<AddressBookResDTO> page(AddressBookPageQueryReqDTO addressBookPageQueryReqDTO) {
-
-        //设置分页参数
-        Page<AddressBook> page = PageUtils.parsePageQuery(addressBookPageQueryReqDTO, AddressBook.class);
-
-        //设置查询条件
-        LambdaQueryWrapper<AddressBook> wrapper =
-                Wrappers.<AddressBook>lambdaQuery().eq(AddressBook::getUserId, UserContext.currentUserId());
-
-        //分页查询
-        Page<AddressBook> serveTypePage = baseMapper.selectPage(page, wrapper);
-
-        return PageUtils.toPage(serveTypePage, AddressBookResDTO.class);
-    }
-
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void addAddress(AddressBookUpsertReqDTO addressBookUpsertReqDTO) {
+    public void add(AddressBookUpsertReqDTO addressBookUpsertReqDTO) {
         //当前用户id
         Long userId = UserContext.currentUserId();
-
-        //1. 如果新增地址设为默认，则将当前用户的其它地址设置为非默认
+        //如果新增地址设为默认，取消其他默认地址
         if (1 == addressBookUpsertReqDTO.getIsDefault()) {
-            //update address_book set is_default = 0 where user_id = 当前用户
-            this.lambdaUpdate().set(AddressBook::getIsDefault, 0)
-                    .eq(AddressBook::getUserId, userId)
-                    .update();
+            cancelDefault(userId);
         }
 
-        //2. 拷贝赋值
         AddressBook addressBook = BeanUtil.toBean(addressBookUpsertReqDTO, AddressBook.class);
         addressBook.setUserId(userId);
 
-        //3. 如果请求体中没有经纬度，则调用第三方api根据详细地址获取经纬度
-        if (ObjectUtil.isEmpty(addressBookUpsertReqDTO.getLocation())) {
-            //组装详细地址
-            String completeAddress = addressBookUpsertReqDTO.getProvince() +
-                    addressBookUpsertReqDTO.getCity() +
-                    addressBookUpsertReqDTO.getCounty() +
-                    addressBookUpsertReqDTO.getAddress();
+        //组装详细地址
+        String completeAddress = addressBookUpsertReqDTO.getProvince() +
+                addressBookUpsertReqDTO.getCity() +
+                addressBookUpsertReqDTO.getCounty() +
+                addressBookUpsertReqDTO.getAddress();
+
+        //如果请求体中没有经纬度，需要调用第三方api根据详细地址获取经纬度
+        if(ObjectUtil.isEmpty(addressBookUpsertReqDTO.getLocation())){
             //远程请求高德获取经纬度
             LocationResDTO locationDto = mapApi.getLocationByAddress(completeAddress);
             //经纬度(字符串格式：经度,纬度),经度在前，纬度在后
@@ -149,33 +76,109 @@ public class AddressBookServiceImpl extends ServiceImpl<AddressBookMapper, Addre
             addressBookUpsertReqDTO.setLocation(location);
         }
 
-        if (StringUtils.isNotEmpty(addressBookUpsertReqDTO.getLocation())) {
+        if(StringUtils.isNotEmpty(addressBookUpsertReqDTO.getLocation())) {
             // 经度
             addressBook.setLon(NumberUtils.parseDouble(addressBookUpsertReqDTO.getLocation().split(",")[0]));
             // 纬度
             addressBook.setLat(NumberUtils.parseDouble(addressBookUpsertReqDTO.getLocation().split(",")[1]));
         }
-
-        //4. 执行保存操作
-        getBaseMapper().insert(addressBook);
+        addressBookMapper.insert(addressBook);
     }
 
+    /**
+     * 地址薄修改
+     *
+     * @param id                      地址薄id
+     * @param addressBookUpsertReqDTO 插入更新地址薄
+     */
     @Override
-    public AddressBookResDTO obtainDefaultAddress() {
-        //用户id  默认地址
-        //select * from address_book where user_id = 登录用户 and is_default = 1
-        AddressBook addressBook = this.lambdaQuery()
-                .eq(AddressBook::getUserId, UserContext.currentUserId())//登录用户id
-                .eq(AddressBook::getIsDefault, 1)//默认地址
-                .one();
-        if (ObjectUtil.isNull(addressBook)) {
-            return null;
+    @Transactional
+    public void update(Long id, AddressBookUpsertReqDTO addressBookUpsertReqDTO) {
+        if (1 == addressBookUpsertReqDTO.getIsDefault()) {
+            cancelDefault(UserContext.currentUserId());
         }
 
-        //转换
-        return BeanUtil.copyProperties(addressBook, AddressBookResDTO.class);
+        AddressBook addressBook = BeanUtil.toBean(addressBookUpsertReqDTO, AddressBook.class);
+        addressBook.setId(id);
+
+        //调用第三方，根据地址获取经纬度坐标
+        String completeAddress = addressBookUpsertReqDTO.getProvince() +
+                addressBookUpsertReqDTO.getCity() +
+                addressBookUpsertReqDTO.getCounty() +
+                addressBookUpsertReqDTO.getAddress();
+        //远程请求高德获取经纬度
+        LocationResDTO locationDto = mapApi.getLocationByAddress(completeAddress);
+        //经纬度(字符串格式：经度,纬度),经度在前，纬度在后
+        String location = locationDto.getLocation();
+        if(StringUtils.isNotEmpty(location)) {
+            // 经度
+            addressBook.setLon(NumberUtils.parseDouble(locationDto.getLocation().split(",")[0]));
+            // 纬度
+            addressBook.setLat(NumberUtils.parseDouble(locationDto.getLocation().split(",")[1]));
+        }
+        addressBookMapper.updateById(addressBook);
     }
 
+    /**
+     * 取消默认
+     *
+     * @param userId 用户id
+     */
+    private void cancelDefault(Long userId) {
+        LambdaUpdateWrapper<AddressBook> updateWrapper = Wrappers.<AddressBook>lambdaUpdate()
+                .eq(AddressBook::getUserId, userId)
+                .set(AddressBook::getIsDefault, 0);
+        super.update(updateWrapper);
+    }
+
+    /**
+     * 地址薄设为默认/取消默认
+     *
+     * @param userId 用户id
+     * @param id   地址薄id
+     * @param flag 是否为默认地址，0：否，1：是
+     */
+    @Override
+    public void updateDefaultStatus(Long userId,Long id, Integer flag) {
+        if (1 == flag) {
+            //如果设默认地址，先把其他地址取消默认
+            cancelDefault(userId);
+        }
+
+        AddressBook addressBook = new AddressBook();
+        addressBook.setId(id);
+        addressBook.setIsDefault(flag);
+        addressBookMapper.updateById(addressBook);
+    }
+
+    /**
+     * 分页查询
+     *
+     * @param addressBookPageQueryReqDTO 查询条件
+     * @return 分页结果
+     */
+    @Override
+    public PageResult<AddressBookResDTO> page(AddressBookPageQueryReqDTO addressBookPageQueryReqDTO) {
+        Page<AddressBook> page = PageUtils.parsePageQuery(addressBookPageQueryReqDTO, AddressBook.class);
+
+        LambdaQueryWrapper<AddressBook> queryWrapper = Wrappers.<AddressBook>lambdaQuery().eq(AddressBook::getUserId, UserContext.currentUserId());
+        Page<AddressBook> serveTypePage = addressBookMapper.selectPage(page, queryWrapper);
+        return PageUtils.toPage(serveTypePage, AddressBookResDTO.class);
+    }
+
+    /**
+     * 获取默认地址
+     *
+     * @return 默认地址
+     */
+    @Override
+    public AddressBookResDTO defaultAddress() {
+        LambdaQueryWrapper<AddressBook> queryWrapper = Wrappers.<AddressBook>lambdaQuery()
+                .eq(AddressBook::getUserId, UserContext.currentUserId())
+                .eq(AddressBook::getIsDefault, 1);
+        AddressBook addressBook = addressBookMapper.selectOne(queryWrapper);
+        return BeanUtil.toBean(addressBook, AddressBookResDTO.class);
+    }
 
     @Override
     public List<AddressBookResDTO> getByUserIdAndCity(Long userId, String city) {
@@ -184,11 +187,9 @@ public class AddressBookServiceImpl extends ServiceImpl<AddressBookMapper, Addre
                 .eq(AddressBook::getUserId, userId)
                 .eq(AddressBook::getCity, city)
                 .list();
-        if (CollUtils.isEmpty(addressBooks)) {
+        if(CollUtils.isEmpty(addressBooks)) {
             return new ArrayList<>();
         }
         return BeanUtils.copyToList(addressBooks, AddressBookResDTO.class);
     }
-
-
 }

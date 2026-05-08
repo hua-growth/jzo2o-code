@@ -3,7 +3,6 @@ package com.jzo2o.orders.manager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
@@ -14,7 +13,6 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @EnableAspectJAutoProxy
 @Slf4j
 @EnableTransactionManagement
-@EnableFeignClients(basePackages = "com.jzo2o.api")
 public class OrdersManagerApplication {
     public static void main(String[] args) {
         new SpringApplicationBuilder(OrdersManagerApplication.class)

@@ -1,13 +1,22 @@
 package com.jzo2o.customer.model.domain;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.IdType;
+import java.time.LocalDateTime;
+import com.baomidou.mybatisplus.annotation.TableId;
+import java.io.Serializable;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
 
-import java.io.Serializable;
-import java.time.LocalDateTime;
-
+/**
+ * <p>
+ * 银行账户
+ * </p>
+ *
+ * @author itcast
+ * @since 2023-09-06
+ */
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Accessors(chain = true)
@@ -75,4 +84,6 @@ public class BankAccount implements Serializable {
      * 更新时间
      */
     private LocalDateTime updateTime;
+
+
 }

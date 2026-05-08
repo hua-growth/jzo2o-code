@@ -1,16 +1,31 @@
 package com.jzo2o.orders.manager.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.ObjectUtil;
+import cn.hutool.db.DbRuntimeException;
+import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.OrderItem;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.jzo2o.api.customer.AddressBookApi;
+import com.jzo2o.api.customer.InstitutionStaffApi;
+import com.jzo2o.api.customer.ServeProviderApi;
 import com.jzo2o.api.customer.dto.response.AddressBookResDTO;
+import com.jzo2o.api.customer.dto.response.InstitutionStaffResDTO;
+import com.jzo2o.api.customer.dto.response.ServeProviderResDTO;
 import com.jzo2o.api.foundations.ServeApi;
 import com.jzo2o.api.foundations.dto.response.ServeAggregationResDTO;
 import com.jzo2o.api.market.dto.CouponApi;
+import com.jzo2o.api.market.dto.request.CouponUseBackReqDTO;
 import com.jzo2o.api.market.dto.request.CouponUseReqDTO;
 import com.jzo2o.api.market.dto.response.AvailableCouponsResDTO;
 import com.jzo2o.api.market.dto.response.CouponUseResDTO;
+import com.jzo2o.api.orders.dto.response.OrderResDTO;
+import com.jzo2o.api.orders.dto.response.OrderSimpleResDTO;
 import com.jzo2o.api.trade.NativePayApi;
 import com.jzo2o.api.trade.TradingApi;
 import com.jzo2o.api.trade.dto.request.NativePayReqDTO;
@@ -18,37 +33,60 @@ import com.jzo2o.api.trade.dto.response.NativePayResDTO;
 import com.jzo2o.api.trade.dto.response.TradingResDTO;
 import com.jzo2o.api.trade.enums.PayChannelEnum;
 import com.jzo2o.api.trade.enums.TradingStateEnum;
+import com.jzo2o.common.constants.UserType;
+import com.jzo2o.common.enums.EnableStatusEnum;
+import com.jzo2o.common.expcetions.BadRequestException;
 import com.jzo2o.common.expcetions.CommonException;
 import com.jzo2o.common.expcetions.ForbiddenOperationException;
-import com.jzo2o.common.utils.DateUtils;
-import com.jzo2o.common.utils.ObjectUtils;
-import com.jzo2o.common.utils.StringUtils;
+import com.jzo2o.common.model.PageResult;
+import com.jzo2o.common.model.msg.TradeStatusMsg;
+import com.jzo2o.common.utils.*;
 import com.jzo2o.mvc.utils.UserContext;
+import com.jzo2o.mysql.utils.PageUtils;
 import com.jzo2o.orders.base.config.OrderStateMachine;
-import com.jzo2o.orders.base.constants.RedisConstants;
 import com.jzo2o.orders.base.enums.OrderPayStatusEnum;
 import com.jzo2o.orders.base.enums.OrderStatusChangeEventEnum;
 import com.jzo2o.orders.base.enums.OrderStatusEnum;
 import com.jzo2o.orders.base.mapper.OrdersMapper;
 import com.jzo2o.orders.base.model.domain.Orders;
+import com.jzo2o.orders.base.model.domain.OrdersServe;
 import com.jzo2o.orders.base.model.dto.OrderSnapshotDTO;
+import com.jzo2o.orders.base.service.IOrdersDiversionCommonService;
+import com.jzo2o.orders.manager.model.dto.OrderCancelDTO;
+import com.jzo2o.orders.manager.model.dto.request.OrderPageQueryReqDTO;
 import com.jzo2o.orders.manager.model.dto.request.OrdersPayReqDTO;
 import com.jzo2o.orders.manager.model.dto.request.PlaceOrderReqDTO;
+import com.jzo2o.orders.manager.model.dto.response.OperationOrdersDetailResDTO;
 import com.jzo2o.orders.manager.model.dto.response.OrdersPayResDTO;
 import com.jzo2o.orders.manager.model.dto.response.PlaceOrderResDTO;
 import com.jzo2o.orders.manager.porperties.TradeProperties;
 import com.jzo2o.orders.manager.service.IOrdersCreateService;
-import com.jzo2o.redis.annotations.Lock;
+import com.jzo2o.orders.manager.service.IOrdersManagerService;
+import com.jzo2o.orders.manager.service.IOrdersServeManagerService;
+import com.jzo2o.orders.manager.strategy.OrderCancelStrategyManager;
+import com.jzo2o.redis.helper.CacheHelper;
 import io.seata.spring.annotation.GlobalTransactional;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.Resource;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.stream.Collectors;
+
+import static com.jzo2o.common.constants.ErrorInfo.Code.TRADE_FAILED;
+import static com.jzo2o.orders.base.constants.FieldConstants.SORT_BY;
+import static com.jzo2o.orders.base.constants.OrderConstants.PRODUCT_APP_ID;
+import static com.jzo2o.orders.base.constants.RedisConstants.Lock.ORDERS_SHARD_KEY_ID_GENERATOR;
+import static com.jzo2o.orders.base.constants.RedisConstants.RedisKey.ORDERS;
+import static com.jzo2o.orders.base.constants.RedisConstants.Ttl.ORDERS_PAGE_TTL;
 
 /**
  * <p>
@@ -61,301 +99,381 @@ import java.util.List;
 @Slf4j
 @Service
 public class OrdersCreateServiceImpl extends ServiceImpl<OrdersMapper, Orders> implements IOrdersCreateService {
-    @Autowired
-    private RedisTemplate redisTemplate;
+    @Resource
+    private IOrdersServeManagerService ordersServeManagerService;
 
-    @Autowired
+    @Resource
     private ServeApi serveApi;
 
-    @Autowired
+    @Resource
+    private TradingApi tradingApi;
+
+    @Resource
     private AddressBookApi addressBookApi;
 
-    @Autowired
+    @Resource
     private IOrdersCreateService owner;
 
-    @Autowired
-    private NativePayApi nativePayApi;
+    @Resource
+    private RedisTemplate<String, Long> redisTemplate;
 
-    @Autowired
-    private TradeProperties tradeProperties;
 
-    @Autowired
-    private TradingApi tradingApi;
-    @Autowired
-    private CouponApi couponApi;
-    @Autowired
+    @Resource
+    private ServeProviderApi serveProviderApi;
+    @Resource
+    private InstitutionStaffApi institutionStaffApi;
+    @Resource
+    private OrderCancelStrategyManager orderCancelStrategyManager;
+
+    @Resource
+    private IOrdersDiversionCommonService ordersDiversionService;
+    @Resource
     private OrderStateMachine orderStateMachine;
+    @Resource
+    private TradeProperties tradeProperties;
+    @Resource
+    private NativePayApi nativePayApi;
+    @Resource
+    private CacheHelper cacheHelper;
+
+    @Value("${jzo2o.openPay}")
+    private Boolean openPay;
+
+    @Resource
+    private CouponApi couponApi;
+
+    /**
+     * 生成订单id 格式：{yyMMdd}{13位id}
+     *
+     * @return
+     */
+    private Long generatorOrderId() {
+        //通过Redis自增序列得到序号
+        Long id = redisTemplate.opsForValue().increment(ORDERS_SHARD_KEY_ID_GENERATOR, 1);
+        long orderId = DateUtils.getFormatDate(LocalDateTime.now(), "yyMMdd") * 10000000000000L + id;
+        return orderId;
+    }
 
     @Override
     public List<AvailableCouponsResDTO> getAvailableCoupons(Long serveId, Integer purNum) {
         // 1.获取服务
         ServeAggregationResDTO serveResDTO = serveApi.findById(serveId);
         if (serveResDTO == null || serveResDTO.getSaleStatus() != 2) {
-            throw new ForbiddenOperationException("服务不可用");
+            throw new BadRequestException("服务不可用");
         }
-
         // 2.计算订单总金额
         BigDecimal totalAmount = serveResDTO.getPrice().multiply(new BigDecimal(purNum));
-
         // 3.获取可用优惠券,并返回优惠券列表
-        List<AvailableCouponsResDTO> available = couponApi.getAvailable(totalAmount);
-        return available;
-    }
-
-
-    @Override
-    public OrdersPayResDTO getPayResultFromTradServer(Long id) {
-        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
-        Orders orders = this.getById(id);
-        if (ObjectUtil.isNull(orders)) {
-            throw new ForbiddenOperationException("订单不存在");
-        }
-
-        //2. 如果订单的支付状态是待支付 并且 支付服务交易单号 不为空  调用支付服务查询订单支付状态
-        if (orders.getPayStatus() == 2 && orders.getTradingOrderNo() != null) {
-            //调用支付服务查询订单支付状态
-            TradingResDTO tradingResDTO = tradingApi.findTradResultByTradingOrderNo(orders.getTradingOrderNo());
-            //根据支付服务返回的状态修改订单表中字段(订单状态、支付状态、第三方支付交易号)
-            //交易状态: 2-付款中 3-付款失败 4-已结算 5-取消订单
-            TradingStateEnum tradingState = tradingResDTO.getTradingState();
-
-            if (ObjectUtil.equal(tradingState, TradingStateEnum.YJS)) {
-                // 修改订单状态和支付状态
-                OrderSnapshotDTO orderSnapshotDTO = OrderSnapshotDTO.builder()
-                        .payTime(LocalDateTime.now())
-                        .tradingOrderNo(tradingResDTO.getTradingOrderNo())
-                        .tradingChannel(tradingResDTO.getTradingChannel())
-                        .thirdOrderId(tradingResDTO.getTransactionId())
-                        .build();
-                orderStateMachine.changeStatus(orders.getUserId(), orders.getId().toString(), OrderStatusChangeEventEnum.PAYED, orderSnapshotDTO);
-            } else {
-                //todo 其它情况暂不处理,应该每种都对应一个处理器
-            }
-        }
-
-        //3. 返回结果
-        //查询订单的信息
-        Orders newOrders = this.getById(id);
-        OrdersPayResDTO ordersPayResDTO = new OrdersPayResDTO();
-        ordersPayResDTO.setProductOrderNo(newOrders.getId());//业务系统订单号
-        ordersPayResDTO.setTradingOrderNo(newOrders.getTradingOrderNo());//交易系统订单号
-        ordersPayResDTO.setTradingChannel(newOrders.getTradingChannel());//支付渠道
-        ordersPayResDTO.setPayStatus(newOrders.getPayStatus());//支付状态
-        return ordersPayResDTO;
-    }
-
-//    @Override
-//    public OrdersPayResDTO getPayResultFromTradServer(Long id) {
-//        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
-//        Orders orders = this.getById(id);
-//        if (ObjectUtil.isNull(orders)) {
-//            throw new ForbiddenOperationException("订单不存在");
-//        }
-//
-//        //2. 如果订单的支付状态是待支付 并且 支付服务交易单号 不为空  调用支付服务查询订单支付状态
-//        if (orders.getPayStatus() == 2 && orders.getTradingOrderNo() != null) {
-//            //调用支付服务查询订单支付状态
-//            TradingResDTO tradingResDTO = tradingApi.findTradResultByTradingOrderNo(orders.getTradingOrderNo());
-//            //根据支付服务返回的状态修改订单表中字段(订单状态、支付状态、第三方支付交易号)
-//            //交易状态: 2-付款中 3-付款失败 4-已结算 5-取消订单
-//            TradingStateEnum tradingState = tradingResDTO.getTradingState();
-//            boolean update = this.lambdaUpdate()
-//                    //交易状态: 4-已结算  订单状态:派单中
-//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getOrdersStatus, OrderStatusEnum.DISPATCHING.getStatus())
-//                    //交易状态: 3-付款失败  订单状态:已关闭
-//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.FKSB), Orders::getOrdersStatus, OrderStatusEnum.CLOSED.getStatus())
-//                    //交易状态: 5-取消订单  订单状态:已取消
-//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.QXDD), Orders::getOrdersStatus, OrderStatusEnum.CANCELED.getStatus())
-//                    //交易状态: 4-已结算  支付状态:支付成功
-//                    .set(ObjectUtil.equal(tradingState, TradingStateEnum.YJS), Orders::getPayStatus, OrderPayStatusEnum.PAY_SUCCESS.getStatus())
-//                    //第三方支付交易单号
-//                    .set(ObjectUtil.isNotEmpty(tradingResDTO.getTransactionId()), Orders::getTransactionId, tradingResDTO.getTransactionId())
-//                    //根据订单id更新
-//                    .eq(Orders::getId, id)
-//                    .update();
-//            if (!update) {
-//                log.info("更新订单:{}状态失败", orders.getId());
-//                throw new CommonException("更新订单" + orders.getId() + "状态失败");
-//            }
-//        }
-//
-//        //3. 返回结果
-//        //查询订单的信息
-//        Orders newOrders = this.getById(id);
-//        OrdersPayResDTO ordersPayResDTO = new OrdersPayResDTO();
-//        ordersPayResDTO.setProductOrderNo(newOrders.getId());//业务系统订单号
-//        ordersPayResDTO.setTradingOrderNo(newOrders.getTradingOrderNo());//交易系统订单号
-//        ordersPayResDTO.setTradingChannel(newOrders.getTradingChannel());//支付渠道
-//        ordersPayResDTO.setPayStatus(newOrders.getPayStatus());//支付状态
-//        return ordersPayResDTO;
-//    }
-
-    @Override
-    public OrdersPayResDTO pay(Long id, OrdersPayReqDTO ordersPayReqDTO) {//参数1订单id 参数2支付渠道
-        //调用支付微服务 获取 二维码图片
-        //1. 根据订单id查询订单信息,如果订单不存在, 直接返回错误
-        Orders orders = this.getById(id);
-        if (ObjectUtil.isNull(orders)) {
-            throw new ForbiddenOperationException("订单不存在");
-        }
-
-        //2. 查询订单支付状态, 如果是已经支付 , 直接返回错误
-        //transaction_id : 只有支付成功,才会有这个号
-        if (orders.getPayStatus() == 4 && StringUtils.isNotEmpty(orders.getTransactionId())) {
-            throw new ForbiddenOperationException("订单已经支付了");
-        }
-
-        //3. 调用支付微服务, 获取二维码
-        NativePayReqDTO nativePayReqDTO = new NativePayReqDTO();
-        nativePayReqDTO.setProductAppId("jzo2o.orders");//业务系统标识
-        nativePayReqDTO.setProductOrderNo(id);//业务系统订单号
-        nativePayReqDTO.setTradingChannel(ordersPayReqDTO.getTradingChannel());//支付渠道
-        nativePayReqDTO.setTradingAmount(orders.getRealPayAmount());//支付金额
-        nativePayReqDTO.setMemo(orders.getServeItemName());//备注
-
-        //根据交易渠道设置商户号
-        if (ObjectUtil.equal(ordersPayReqDTO.getTradingChannel(), PayChannelEnum.WECHAT_PAY)) {
-            nativePayReqDTO.setEnterpriseId(tradeProperties.getWechatEnterpriseId());//微信商户号
-        }
-        if (ObjectUtil.equal(ordersPayReqDTO.getTradingChannel(), PayChannelEnum.ALI_PAY)) {
-            nativePayReqDTO.setEnterpriseId(tradeProperties.getAliEnterpriseId());//阿里商户号
-        }
-
-        //原有的交易渠道不为空 而且跟刚刚传入交易渠道不一样
-        if (StringUtils.isNotEmpty(orders.getTradingChannel()) &&
-                !StringUtils.equals(orders.getTradingChannel(), ordersPayReqDTO.getTradingChannel().toString())
-        ) {
-            nativePayReqDTO.setChangeChannel(true);//是否改变交易渠道
-        } else {
-            nativePayReqDTO.setChangeChannel(false);//是否改变交易渠道
-        }
-        NativePayResDTO payResDTO = nativePayApi.createDownLineTrading(nativePayReqDTO);
-
-        //4. 更新订单表数据(支付服务交易单号 支付渠道)
-        orders.setTradingOrderNo(payResDTO.getTradingOrderNo());//支付服务交易单号
-        orders.setTradingChannel(payResDTO.getTradingChannel());//支付渠道
-        this.updateById(orders);
-
-        //5. 封装返回结果
-        OrdersPayResDTO ordersPayResDTO = BeanUtil.copyProperties(payResDTO, OrdersPayResDTO.class);
-        ordersPayResDTO.setPayStatus(2);//支付状态: 未支付
-
-        return ordersPayResDTO;
-    }
-
-    @Lock(formatter = "ORDERS:CREATE:LOCK:#{userId}:#{placeOrderReqDTO.serveId}", time = 30, waitTime = 1, unlock = false)
-    public PlaceOrderResDTO placeOrder(Long userId, PlaceOrderReqDTO placeOrderReqDTO) {
-        //1. 调用运营微服务, 根据服务id查询
-        ServeAggregationResDTO serveDto = serveApi.findById(placeOrderReqDTO.getServeId());
-        if (ObjectUtil.isNull(serveDto) || serveDto.getSaleStatus() != 2) {
-            throw new ForbiddenOperationException("服务不存在或者状态有误");
-        }
-
-        //2. 调用customer微服务, 根据地址id查询信息
-        AddressBookResDTO addressDto = addressBookApi.detail(placeOrderReqDTO.getAddressBookId());
-        if (ObjectUtil.isNull(addressDto)) {
-            throw new ForbiddenOperationException("服务地址有误");
-        }
-
-        //3. 准备Orders实体类对象
-        Orders orders = new Orders();
-        orders.setId(generateOrderId());//订单id
-        orders.setUserId(UserContext.currentUserId());//下单人id
-        orders.setServeId(placeOrderReqDTO.getServeId());//服务id
-
-        //运营数据微服务
-        orders.setServeTypeId(serveDto.getServeTypeId());//服务类型id
-        orders.setServeTypeName(serveDto.getServeTypeName());//服务类型名称
-        orders.setServeItemId(serveDto.getServeItemId());//服务项id
-        orders.setServeItemName(serveDto.getServeItemName());//服务项名称
-        orders.setServeItemImg(serveDto.getServeItemImg());//服务项图片
-        orders.setUnit(serveDto.getUnit());//服务单位
-        orders.setPrice(serveDto.getPrice());//服务单价
-        orders.setCityCode(serveDto.getCityCode());//城市编码
-
-        orders.setOrdersStatus(0);//订单状态: 待支付
-        orders.setPayStatus(2);//支付状态: 待支付
-
-        orders.setPurNum(placeOrderReqDTO.getPurNum());//购买数量
-        orders.setTotalAmount(serveDto.getPrice().multiply(new BigDecimal(placeOrderReqDTO.getPurNum())));//总金额: 价格 * 购买数量
-        orders.setDiscountAmount(new BigDecimal(0));//优惠金额
-        orders.setRealPayAmount(orders.getTotalAmount().subtract(orders.getDiscountAmount()));//实付金额 订单总金额 - 优惠金额
-
-        //地址
-        orders.setServeAddress(addressDto.getAddress());//服务详细地址
-        orders.setContactsPhone(addressDto.getPhone());//联系人手机号
-        orders.setContactsName(addressDto.getName());//联系人名字
-        orders.setLon(addressDto.getLon());//经度
-        orders.setLat(addressDto.getLat());//纬度
-
-        orders.setServeStartTime(placeOrderReqDTO.getServeStartTime());//服务开始时间
-        orders.setDisplay(1);//用户端是否展示 1 展示
-        orders.setSortBy(DateUtils.toEpochMilli(placeOrderReqDTO.getServeStartTime()) + orders.getId() % 100000);//排序字段
-
-
-        //4. 保存到数据表
-        owner.saveOrders(orders);
-        //有优惠卷和无优惠卷两个逻辑的下单
-        if (ObjectUtils.isNull(placeOrderReqDTO.getCouponId())) {
-            owner.saveOrders(orders);
-        } else {
-            owner.saveOrdersWithCoupon(orders, placeOrderReqDTO.getCouponId());
-        }
-
-        //5.返回
-        return new PlaceOrderResDTO(orders.getId());
+        return couponApi.getAvailable(totalAmount);
     }
 
     @Override
     public PlaceOrderResDTO placeOrder(PlaceOrderReqDTO placeOrderReqDTO) {
-        return owner.placeOrder(UserContext.currentUserId(), placeOrderReqDTO);
+        // 1.数据校验
+        // 校验服务地址
+        AddressBookResDTO detail = addressBookApi.detail(placeOrderReqDTO.getAddressBookId());
+        if (detail == null) {
+            throw new BadRequestException("预约地址异常，无法下单");
+        }
+        // 服务
+        ServeAggregationResDTO serveResDTO = serveApi.findById(placeOrderReqDTO.getServeId());
+        //服务下架不可下单
+        if (serveResDTO == null || serveResDTO.getSaleStatus() != 2) {
+            throw new BadRequestException("服务不可用");
+        }
+
+
+        // 2.下单前数据准备
+        Orders orders = new Orders();
+        // id 订单id
+        orders.setId(generatorOrderId());
+        // userId
+        orders.setUserId(UserContext.currentUserId());
+        // 订单状态
+        orders.setOrdersStatus(OrderStatusEnum.NO_PAY.getStatus());
+        // 支付状态，暂不支持，初始化一个空状态
+        orders.setPayStatus(OrderPayStatusEnum.NO_PAY.getStatus());
+        // 服务时间
+        orders.setServeStartTime(placeOrderReqDTO.getServeStartTime());
+        // 购买数量
+        orders.setPurNum(NumberUtils.null2Default(placeOrderReqDTO.getPurNum(), 1));
+        // 地理位置
+        orders.setLon(detail.getLon());
+        orders.setLat(detail.getLat());
+
+        String serveAddress = new StringBuffer(detail.getProvince())
+                .append(detail.getCity())
+                .append(detail.getCounty())
+                .append(detail.getAddress())
+                .toString();
+        orders.setServeAddress(serveAddress);
+        // 联系人
+        orders.setContactsName(detail.getName());
+        orders.setContactsPhone(detail.getPhone());
+
+        //服务类型信息
+        orders.setServeTypeId(serveResDTO.getServeTypeId());
+        orders.setServeTypeName(serveResDTO.getServeTypeName());
+        // 服务id
+        orders.setServeId(placeOrderReqDTO.getServeId());
+        // 服务项id
+        orders.setServeItemId(serveResDTO.getServeItemId());
+        orders.setServeItemName(serveResDTO.getServeItemName());
+        orders.setServeItemImg(serveResDTO.getServeItemImg());
+        orders.setUnit(serveResDTO.getUnit());
+        // 价格
+        orders.setPrice(serveResDTO.getPrice());
+        // 城市编码
+        orders.setCityCode(serveResDTO.getCityCode());
+        // 计算
+        // 订单总金额 价格 * 购买数量
+        orders.setTotalAmount(orders.getPrice().multiply(new BigDecimal(orders.getPurNum())));
+        // 优惠金额 当前默认0
+        orders.setDiscountAmount(BigDecimal.ZERO);
+        // 实付金额 订单总金额 - 优惠金额
+        orders.setRealPayAmount(NumberUtils.sub(orders.getTotalAmount(), orders.getDiscountAmount()));
+        //排序字段
+        long sortBy = DateUtils.toEpochMilli(orders.getServeStartTime()) + orders.getId() % 100000;
+        orders.setSortBy(sortBy);
+
+        // 使用优惠券下单
+        if (ObjectUtils.isNotNull(placeOrderReqDTO.getCouponId())) {
+            // 使用优惠券，走全局事务
+            owner.addWithCoupon(orders, placeOrderReqDTO.getCouponId());
+        } else {
+            // 无优惠券下单，走本地事务
+            owner.add(orders);
+        }
+        //TODO 暂时不需要支付
+        if (Boolean.FALSE.equals(openPay)) {
+            TradeStatusMsg msg = TradeStatusMsg.builder()
+                    .productOrderNo(orders.getId())
+                    .tradingChannel("WECHAT_PAY")
+                    .statusCode(TradingStateEnum.YJS.getCode())
+                    .tradingOrderNo(IdUtil.getSnowflakeNextId())
+                    .transactionId(IdUtils.getSnowflakeNextIdStr())
+                    .build();
+            paySuccess(msg);
+        }
+        return new PlaceOrderResDTO(orders.getId());
     }
 
-    @Transactional
-    public void saveOrders(Orders orders) {
-        this.save(orders);
-        //构建快照
-        OrderSnapshotDTO orderSnapshotDTO = BeanUtil.toBean(this.getById(orders.getId()), OrderSnapshotDTO.class);
 
-        //启动状态机
-        orderStateMachine.start(orders.getUserId(), orders.getId().toString(), orderSnapshotDTO);
-    }
-
-    @GlobalTransactional
-    public void saveOrdersWithCoupon(Orders orders, Long couponId) {
-        //1. 调用优惠券微服务核销优惠券
-        CouponUseReqDTO couponUseReqDTO = new CouponUseReqDTO();
-        couponUseReqDTO.setId(couponId);//优惠券id
-        couponUseReqDTO.setOrdersId(orders.getId());//订单id
-        couponUseReqDTO.setTotalAmount(orders.getTotalAmount());//总金额
-        CouponUseResDTO couponUseResDTO = couponApi.use(couponUseReqDTO);
-
-        //2. 修改订单的优惠金额和实付金额
-        BigDecimal discountAmount = couponUseResDTO.getDiscountAmount();
-        orders.setDiscountAmount(discountAmount);//优惠金额
-        orders.setRealPayAmount(orders.getTotalAmount().subtract(discountAmount));//实付金额
-
-        //3. 创建订单
-        this.save(orders);
-        OrderSnapshotDTO orderSnapshotDTO = BeanUtil.toBean(this.getById(orders.getId()), OrderSnapshotDTO.class);
-
-        //启动状态机
-        orderStateMachine.start(orders.getUserId(), orders.getId().toString(), orderSnapshotDTO);
+    /**
+     * 更新支付状态
+     *
+     * @param id        订单id
+     * @param payStatus 支付状态
+     */
+    @Override
+    public Boolean updatePayStatus(Long id, Integer payStatus) {
+        LambdaUpdateWrapper<Orders> updateWrapper = Wrappers.<Orders>lambdaUpdate()
+                .eq(Orders::getId, id)
+                .ne(Orders::getPayStatus, payStatus)
+                .set(Orders::getPayStatus, payStatus);
+        return super.update(updateWrapper);
     }
 
     /**
-     * 生成订单id
+     * 更新退款状态
      *
-     * @return 订单id 19位：2位年+2位月+2位日+13位序号(自增)
+     * @param id           订单id
+     * @param refundStatus 退款状态
+     * @param refundId     第三方支付的退款单号
+     * @param refundNo     支付服务退款单号
      */
-    private Long generateOrderId() {
-        //1. 2位年+2位月+2位日
-        Long yyMMdd = DateUtils.getFormatDate(LocalDateTime.now(), "yyMMdd");
-
-        //2. 自增数字  1 2
-        Long num = redisTemplate.opsForValue().increment(RedisConstants.Lock.ORDERS_SHARD_KEY_ID_GENERATOR, 1);//1 代表的是每次增长量为1
-
-        //3. 组装返回
-        return yyMMdd * 10000000000000L + num;
+    @Override
+    public Boolean updateRefundStatus(Long id, Integer refundStatus, String refundId, Long refundNo) {
+        LambdaUpdateWrapper<Orders> updateWrapper = Wrappers.<Orders>lambdaUpdate()
+                .eq(Orders::getId, id)
+                .ne(Orders::getRefundStatus, refundStatus)
+                .set(Orders::getRefundStatus, refundStatus)
+                .set(ObjectUtil.isNotEmpty(refundId), Orders::getRefundId, refundId)
+                .set(ObjectUtil.isNotEmpty(refundNo), Orders::getRefundNo, refundNo);
+        return super.update(updateWrapper);
     }
+    /**
+     * 查询超时订单id列表
+     *
+     * @param count 数量
+     * @return 订单id列表
+     */
+    @Override
+    public List<Orders> queryOverTimePayOrdersListByCount(Integer count) {
+        LambdaQueryWrapper<Orders> queryWrapper = Wrappers.<Orders>lambdaQuery()
+                .eq(Orders::getOrdersStatus, OrderStatusEnum.NO_PAY.getStatus())
+                .lt(Orders::getCreateTime, LocalDateTime.now().minusMinutes(15))
+                .gt(Orders::getId, 0)
+                .gt(Orders::getUserId, 0)
+                .orderByAsc(Orders::getCreateTime)
+                .last("LIMIT " + count);
+
+        List<Orders> ordersList = baseMapper.selectList(queryWrapper);
+        if (ObjectUtil.isEmpty(ordersList)) {
+            return Collections.emptyList();
+        }
+
+        return ordersList;
+    }
+    /**
+     * 支付成功， 其他信息暂且不填
+     *
+     * @param tradeStatusMsg 交易状态消息
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void paySuccess(TradeStatusMsg tradeStatusMsg) {
+        //查询订单
+        Orders orders = baseMapper.selectById(tradeStatusMsg.getProductOrderNo());
+        if (ObjectUtil.notEqual(OrderStatusEnum.NO_PAY.getStatus(), orders.getOrdersStatus())) {
+            log.info("当前订单：{}，不是待支付状态", orders.getId());
+            return;
+        }
+
+        //第三方支付单号校验
+        if (ObjectUtil.isEmpty(tradeStatusMsg.getTransactionId())) {
+            throw new CommonException("支付成功通知缺少第三方支付单号");
+        }
+
+        // 修改订单状态和支付状态
+        OrderSnapshotDTO orderSnapshotDTO = OrderSnapshotDTO.builder()
+                .payTime(LocalDateTime.now())
+                .tradingOrderNo(tradeStatusMsg.getTradingOrderNo())
+                .tradingChannel(tradeStatusMsg.getTradingChannel())
+                .thirdOrderId(tradeStatusMsg.getTransactionId())
+                .payStatus(OrderPayStatusEnum.PAY_SUCCESS.getStatus())
+                .build();
+        orderStateMachine.changeStatus(orders.getUserId(), String.valueOf(orders.getId()), OrderStatusChangeEventEnum.PAYED, orderSnapshotDTO);
+        // 订单分流
+        ordersDiversionService.diversion(orders);
+    }
+
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void add(Orders orders) {
+        boolean save = this.save(orders);
+        if (!save) {
+            throw new DbRuntimeException("下单失败");
+        }
+
+        //状态机启动
+        OrderSnapshotDTO orderSnapshotDTO = BeanUtil.toBean(baseMapper.selectById(orders.getId()), OrderSnapshotDTO.class);
+        orderSnapshotDTO.setPayStatus(OrderPayStatusEnum.NO_PAY.getStatus());
+        orderStateMachine.start(orders.getUserId(), orders.getId().toString(), orderSnapshotDTO);
+    }
+
+    @Override
+    public int getPayResultFromTradServer(Long id) {
+        //查询订单表
+        Orders orders = baseMapper.selectById(id);
+        if (ObjectUtil.isNull(orders)) {
+            throw new CommonException(TRADE_FAILED, "订单不存在");
+        }
+        //支付结果
+        Integer payStatus = orders.getPayStatus();
+        //未支付且已存在支付服务的交易单号此时远程调用支付服务查询支付结果
+        if (OrderPayStatusEnum.NO_PAY.getStatus() == payStatus
+                && ObjectUtil.isNotEmpty(orders.getTradingOrderNo())) {
+            //远程调用支付服务查询支付结果
+            TradingResDTO tradingResDTO = tradingApi.findTradResultByTradingOrderNo(orders.getTradingOrderNo());
+            //如果支付成功这里更新订单状态
+            if (ObjectUtil.isNotNull(tradingResDTO)
+                    && ObjectUtil.equals(tradingResDTO.getTradingState(), TradingStateEnum.YJS)) {
+                //设置订单的支付状态成功
+                TradeStatusMsg msg = TradeStatusMsg.builder()
+                        .productOrderNo(orders.getId())
+                        .tradingChannel(tradingResDTO.getTradingChannel())
+                        .statusCode(TradingStateEnum.YJS.getCode())
+                        .tradingOrderNo(tradingResDTO.getTradingOrderNo())
+                        .transactionId(tradingResDTO.getTransactionId())
+                        .build();
+                paySuccess(msg);
+                return OrderPayStatusEnum.PAY_SUCCESS.getStatus();
+            }
+        }
+        return payStatus;
+    }
+
+    /**
+     * 订单支付
+     *
+     * @param id              订单id
+     * @param ordersPayReqDTO 订单支付请求体
+     * @return 订单支付响应体
+     */
+    @Override
+    public OrdersPayResDTO pay(Long id, OrdersPayReqDTO ordersPayReqDTO) {
+        Orders orders =  baseMapper.selectById(id);
+        if (ObjectUtil.isNull(orders)) {
+            throw new CommonException(TRADE_FAILED, "订单不存在");
+        }
+        //订单的支付状态为成功直接返回
+        if (OrderPayStatusEnum.PAY_SUCCESS.getStatus() == orders.getPayStatus()
+                && ObjectUtil.isNotEmpty(orders.getTradingOrderNo())) {
+            OrdersPayResDTO ordersPayResDTO = new OrdersPayResDTO();
+            BeanUtil.copyProperties(orders, ordersPayResDTO);
+            ordersPayResDTO.setProductOrderNo(orders.getId());
+            return ordersPayResDTO;
+        } else {
+            //生成二维码
+            NativePayResDTO nativePayResDTO = generatQrCode(orders, ordersPayReqDTO.getTradingChannel());
+            OrdersPayResDTO ordersPayResDTO = BeanUtil.toBean(nativePayResDTO, OrdersPayResDTO.class);
+            return ordersPayResDTO;
+        }
+
+    }
+
+
+    //生成二维码
+    private NativePayResDTO generatQrCode(Orders orders, PayChannelEnum tradingChannel) {
+
+        //判断支付渠道
+        Long enterpriseId = ObjectUtil.equal(PayChannelEnum.ALI_PAY, tradingChannel) ?
+                tradeProperties.getAliEnterpriseId() : tradeProperties.getWechatEnterpriseId();
+
+        //构建支付请求参数
+        NativePayReqDTO nativePayReqDTO = new NativePayReqDTO();
+        nativePayReqDTO.setProductOrderNo(orders.getId());
+        nativePayReqDTO.setTradingChannel(tradingChannel);
+        nativePayReqDTO.setTradingAmount(orders.getRealPayAmount());
+        nativePayReqDTO.setEnterpriseId(enterpriseId);
+        nativePayReqDTO.setProductAppId(PRODUCT_APP_ID);//指定支付来源是家政订单
+        //判断是否切换支付渠道
+        if (ObjectUtil.isNotEmpty(orders.getTradingChannel())
+                && ObjectUtil.notEqual(orders.getTradingChannel(), tradingChannel.toString())) {
+            nativePayReqDTO.setChangeChannel(true);
+        }
+        //生成支付二维码
+        NativePayResDTO downLineTrading = nativePayApi.createDownLineTrading(nativePayReqDTO);
+        //将交易单信息更新到订单中
+        LambdaUpdateWrapper<Orders> updateWrapper = Wrappers.<Orders>lambdaUpdate()
+                .eq(Orders::getId, orders.getId())
+                .gt(Orders::getUserId, 0)
+                .set(Orders::getTradingOrderNo, downLineTrading.getTradingOrderNo())
+                .set(Orders::getTradingChannel, downLineTrading.getTradingChannel().toString());
+        super.update(updateWrapper);
+        return downLineTrading;
+    }
+
+    @GlobalTransactional
+    @Override
+    public void addWithCoupon(Orders orders, Long couponId) {
+        CouponUseReqDTO couponUseReqDTO = new CouponUseReqDTO();
+        couponUseReqDTO.setOrdersId(orders.getId());
+        couponUseReqDTO.setId(couponId);
+        couponUseReqDTO.setTotalAmount(orders.getTotalAmount());
+        //优惠券核销
+        CouponUseResDTO couponUseResDTO = couponApi.use(couponUseReqDTO);
+        // 设置优惠金额
+        orders.setDiscountAmount(couponUseResDTO.getDiscountAmount());
+        // 计算实付金额
+        BigDecimal realPayAmount = orders.getTotalAmount().subtract(orders.getDiscountAmount());
+        orders.setRealPayAmount(realPayAmount);
+        //保存订单
+        add(orders);
+    }
+
+
+
 }

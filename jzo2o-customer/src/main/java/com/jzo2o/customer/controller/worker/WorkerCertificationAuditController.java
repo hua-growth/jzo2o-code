@@ -6,15 +6,19 @@ import com.jzo2o.customer.service.IWorkerCertificationAuditService;
 import com.jzo2o.mvc.utils.UserContext;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import javax.annotation.Resource;
+
+/**
+ * @author itcast
+ */
 @RestController("workerWorkerCertificationAuditController")
 @RequestMapping("/worker/worker-certification-audit")
 @Api(tags = "服务端 - 服务人员认证审核相关接口")
 public class WorkerCertificationAuditController {
 
-    @Autowired
+    @Resource
     private IWorkerCertificationAuditService workerCertificationAuditService;
 
     @PostMapping

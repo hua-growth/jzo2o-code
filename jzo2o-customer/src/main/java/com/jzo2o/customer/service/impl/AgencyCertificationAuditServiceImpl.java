@@ -14,6 +14,7 @@ import com.jzo2o.customer.enums.CertificationStatusEnum;
 import com.jzo2o.customer.mapper.AgencyCertificationAuditMapper;
 import com.jzo2o.customer.model.domain.AgencyCertification;
 import com.jzo2o.customer.model.domain.AgencyCertificationAudit;
+import com.jzo2o.customer.model.domain.WorkerCertification;
 import com.jzo2o.customer.model.dto.AgencyCertificationUpdateDTO;
 import com.jzo2o.customer.model.dto.request.AgencyCertificationAuditAddReqDTO;
 import com.jzo2o.customer.model.dto.request.AgencyCertificationAuditPageQueryReqDTO;
@@ -31,11 +32,20 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 
+/**
+ * <p>
+ * 机构认证审核表 服务实现类
+ * </p>
+ *
+ * @author itcast
+ * @since 2023-09-06
+ */
 @Service
 public class AgencyCertificationAuditServiceImpl extends ServiceImpl<AgencyCertificationAuditMapper, AgencyCertificationAudit> implements IAgencyCertificationAuditService {
-
     @Resource
     private IAgencyCertificationService agencyCertificationService;
+    @Resource
+    private IServeProviderService serveProviderService;
 
     /**
      * 机构申请资质认证
@@ -64,23 +74,6 @@ public class AgencyCertificationAuditServiceImpl extends ServiceImpl<AgencyCerti
         }
 
     }
-
-    /**
-     * 查询当前用户最近驳回原因
-     *
-     * @return 驳回原因
-     */
-    @Override
-    public RejectReasonResDTO queryCurrentUserLastRejectReason() {
-        LambdaQueryWrapper<AgencyCertificationAudit> queryWrapper = Wrappers.<AgencyCertificationAudit>lambdaQuery()
-                .eq(AgencyCertificationAudit::getServeProviderId, UserContext.currentUserId())
-                .orderByDesc(AgencyCertificationAudit::getCreateTime)
-                .last("limit 1");
-        AgencyCertificationAudit agencyCertificationAudit = baseMapper.selectOne(queryWrapper);
-        return new RejectReasonResDTO(agencyCertificationAudit.getRejectReason());
-    }
-    @Resource
-    private IServeProviderService serveProviderService;
 
     /**
      * 审核认证信息
@@ -138,5 +131,20 @@ public class AgencyCertificationAuditServiceImpl extends ServiceImpl<AgencyCerti
                 .eq(ObjectUtil.isNotEmpty(agencyCertificationAuditPageQueryReqDTO.getCertificationStatus()), AgencyCertificationAudit::getCertificationStatus, agencyCertificationAuditPageQueryReqDTO.getCertificationStatus());
         Page<AgencyCertificationAudit> result = baseMapper.selectPage(page, queryWrapper);
         return PageUtils.toPage(result, AgencyCertificationAuditResDTO.class);
+    }
+
+    /**
+     * 查询当前用户最近驳回原因
+     *
+     * @return 驳回原因
+     */
+    @Override
+    public RejectReasonResDTO queryCurrentUserLastRejectReason() {
+        LambdaQueryWrapper<AgencyCertificationAudit> queryWrapper = Wrappers.<AgencyCertificationAudit>lambdaQuery()
+                .eq(AgencyCertificationAudit::getServeProviderId, UserContext.currentUserId())
+                .orderByDesc(AgencyCertificationAudit::getCreateTime)
+                .last("limit 1");
+        AgencyCertificationAudit agencyCertificationAudit = baseMapper.selectOne(queryWrapper);
+        return new RejectReasonResDTO(agencyCertificationAudit.getRejectReason());
     }
 }

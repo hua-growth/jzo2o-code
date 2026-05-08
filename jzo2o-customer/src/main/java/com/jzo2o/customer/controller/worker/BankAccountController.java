@@ -8,30 +8,33 @@ import com.jzo2o.customer.model.dto.response.BankAccountResDTO;
 import com.jzo2o.customer.service.IBankAccountService;
 import com.jzo2o.mvc.utils.UserContext;
 import io.swagger.annotations.Api;
-import org.springframework.beans.factory.annotation.Autowired;
+import io.swagger.annotations.ApiOperation;
 import org.springframework.web.bind.annotation.*;
 
+import javax.annotation.Resource;
+
+/**
+ * @author itcast
+ */
 @RestController("workerBankAccountController")
 @RequestMapping("/worker/bank-account")
 @Api(tags = "服务端 - 银行账户信息相关接口")
 public class BankAccountController {
 
-    @Autowired
+    @Resource
     private IBankAccountService bankAccountService;
 
-    //新增或更新银行账号信息
     @PostMapping
+    @ApiOperation("新增或更新银行账号信息")
     public void queryByServeProviderId(@RequestBody BankAccountUpsertReqDTO bankAccountUpsertReqDTO) {
         CurrentUserInfo currentUserInfo = UserContext.currentUser();
         bankAccountUpsertReqDTO.setId(currentUserInfo.getId());
         bankAccountUpsertReqDTO.setType(currentUserInfo.getUserType());
-        BankAccount bankAccount = BeanUtil.toBean(bankAccountUpsertReqDTO, BankAccount.class);
-
-        bankAccountService.saveOrUpdate(bankAccount);
+        bankAccountService.upsert(bankAccountUpsertReqDTO);
     }
 
-    //获取当前用户银行账号
     @GetMapping("/currentUserBankAccount")
+    @ApiOperation("获取当前用户银行账号")
     public BankAccountResDTO queryCurrentUserBankAccount() {
         BankAccount bankAccount = bankAccountService.getById(UserContext.currentUserId());
         return BeanUtil.toBean(bankAccount, BankAccountResDTO.class);
